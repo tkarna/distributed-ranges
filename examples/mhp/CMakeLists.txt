@@ -27,6 +27,7 @@ endfunction()
 add_mhp_example(stencil-1d)
 add_mhp_example(stencil-1d-array)
 add_mhp_example(stencil-1d-pointer)
+add_mhp_example(wave-equation)
 
 if(OpenMP_FOUND)
   add_executable(vector-add-ref vector-add-ref.cpp)
