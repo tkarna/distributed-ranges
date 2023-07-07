@@ -58,136 +58,119 @@ double initial_elev(double x, double y, double lx, double ly) {
   return exact_elev(x, y, 0.0, lx, ly);
 }
 
-void rhs(Array &u, Array &v, Array &e, Array &dudx, Array &dvdy, Array &dudt,
-         Array &dvdt, Array &dedt, double g, double h, double dx_inv,
-         double dy_inv, double dt) {
-  /**
-   * Evaluate right hand side of the equations
-   */
-
-  auto rhs_dedx = [dt, g, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
-  };
-  dr::mhp::stencil_for_each_2d({1, 1, 0, 0}, {0, 0}, rhs_dedx, e, dudt);
-  auto rhs_dedy = [dt, g, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(0, 1) - in(0, 0)) * dy_inv;
-  };
-  dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e, dvdt);
-
-  // auto rhs_dudx = [dt, h, dx_inv](auto v) {
-  //   auto [in, out] = v;
-  //   out(0, 0) = -dt * h * (in(0, 0) - in(-1, 0)) * dx_inv;
-  // };
-  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dudx, u, dudx);
-
-  // auto rhs_dvdy = [dt, h, dy_inv](auto v) {
-  //   auto [in, out] = v;
-  //   out(0, 0) = -dt * h * (in(0, 1) - in(0, 0)) * dy_inv;
-  // };
-  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dvdy, v, dvdy);
-  // auto add = [](auto ops) { return ops.first + ops.second; };
-  // dr::mhp::transform(dr::mhp::views::zip(dudx, dvdy), dedt.begin(), add);
-
-  // fused divergence(uv) = dudx + dvdy kernel
-  // NOTE in this case fusion is easy as the stencil_extents and
-  // output_offset are the same in both cases
-  auto rhs_div_uv = [dt, h, dx_inv, dy_inv](auto tuple) {
-    auto [u, v, out] = tuple;
-    auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
-    auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
-    out(0, 0) = -dt * h * (dudx + dvdy);
-  };
-  dr::mhp::stencil_for_each_fuse3({1, 0, 0, 0}, {0, 0}, rhs_div_uv, u, v, dedt);
-};
-
 void stage1(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
-            Array &dudx, Array &dvdy, Array &dudt, Array &dvdt, Array &dedt,
             double g, double h, double dx_inv, double dy_inv, double dt) {
   /**
-   * Evaluate right hand side of the equations
+   * Evaluate stage 1 of the RK time stepper
+   *
+   * u1 = u + dt*rhs(u)
+   *
    */
-
-  auto rhs_dedx = [dt, g, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
+  // u: elevation x gradient
+  auto rhs_u1 = [dt, g, dx_inv](auto tuple) {
+    auto [e, u, out] = tuple;
+    auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
+    out(0, 0) = u(0, 0) - dt * g * dedx;
   };
-  dr::mhp::stencil_for_each_2d({1, 1, 0, 0}, {0, 0}, rhs_dedx, e, dudt);
-  auto rhs_dedy = [dt, g, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(0, 1) - in(0, 0)) * dy_inv;
-  };
-  dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e, dvdt);
+  dr::mhp::stencil_for_each_fuse3({1, 1, 0, 0}, rhs_u1, e, u, u1);
+  dr::mhp::halo(u1).exchange();
 
-  // fused divergence(uv) and assignment kernel
+  // v: elevation y gradient
+  auto rhs_v1 = [dt, g, dy_inv](auto tuple) {
+    auto [e, v, out] = tuple;
+    auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
+    out(0, 0) = v(0, 0) - dt * g * dedy;
+  };
+  dr::mhp::stencil_for_each_fuse3({0, 0, 1, 0}, rhs_v1, e, v, v1);
+  dr::mhp::halo(v1).exchange();
+
+  // e: divergence of (u, v)
   auto rhs_e1 = [dt, h, dx_inv, dy_inv](auto tuple) {
-    auto [u, v, e, out] = tuple;
+    auto [e, u, v, out] = tuple;
     auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
     auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
     out(0, 0) = e(0, 0) - dt * h * (dudx + dvdy);
   };
-  dr::mhp::stencil_for_each_fuse4({1, 0, 0, 0}, {0, 0}, rhs_e1, u, v, e, e1);
+  dr::mhp::stencil_for_each_fuse4({1, 0, 0, 0}, rhs_e1, e, u, v, e1);
+  dr::mhp::halo(e1).exchange();
 };
 
 void stage2(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
-            Array &u2, Array &v2, Array &e2, Array &dudx, Array &dvdy,
-            Array &dudt, Array &dvdt, double g, double h, double dx_inv,
+            Array &u2, Array &v2, Array &e2, double g, double h, double dx_inv,
             double dy_inv, double dt) {
   /**
-   * Evaluate right hand side of the equations
+   * Evaluate stage 2 of the RK time stepper
+   *
+   * u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
+   *
    */
-
-  auto rhs_dedx = [dt, g, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
+  // u: elevation x gradient
+  auto rhs_u2 = [dt, g, dx_inv](auto tuple) {
+    auto [e1, u1, u, out] = tuple;
+    auto dedx = (e1(1, 0) - e1(0, 0)) * dx_inv;
+    out(0, 0) = 0.75 * u(0, 0) + 0.25 * (u1(0, 0) - dt * g * dedx);
   };
-  dr::mhp::stencil_for_each_2d({1, 1, 0, 0}, {0, 0}, rhs_dedx, e1, dudt);
-  auto rhs_dedy = [dt, g, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(0, 1) - in(0, 0)) * dy_inv;
-  };
-  dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e1, dvdt);
+  dr::mhp::stencil_for_each_fuse4({1, 1, 0, 0}, rhs_u2, e1, u1, u, u2);
+  dr::mhp::halo(u2).exchange();
 
-  // fused divergence(uv) and assignment kernel
+  // v: elevation y gradient
+  auto rhs_v2 = [dt, g, dy_inv](auto tuple) {
+    auto [e1, v1, v, out] = tuple;
+    auto dedy = (e1(0, 0) - e1(0, -1)) * dy_inv;
+    out(0, 0) = 0.75 * v(0, 0) + 0.25 * (v1(0, 0) - dt * g * dedy);
+  };
+  dr::mhp::stencil_for_each_fuse4({0, 0, 1, 0}, rhs_v2, e1, v1, v, v2);
+  dr::mhp::halo(v2).exchange();
+
+  // e: divergence of (u, v)
   auto rhs_e2 = [dt, h, dx_inv, dy_inv](auto tuple) {
-    auto [e, u1, v1, e1, out] = tuple;
+    auto [e1, u1, v1, e, out] = tuple;
     auto dudx = (u1(0, 0) - u1(-1, 0)) * dx_inv;
     auto dvdy = (v1(0, 1) - v1(0, 0)) * dy_inv;
     out(0, 0) = 0.75 * e(0, 0) + 0.25 * (e1(0, 0) - dt * h * (dudx + dvdy));
   };
-  dr::mhp::stencil_for_each_fuse5({1, 0, 0, 0}, {0, 0}, rhs_e2, e, u1, v1, e1,
-                                  e2);
+  dr::mhp::stencil_for_each_fuse5({1, 0, 0, 0}, rhs_e2, e1, u1, v1, e, e2);
+  dr::mhp::halo(e2).exchange();
 };
 
-void stage3(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
-            Array &u2, Array &v2, Array &e2, Array &dudx, Array &dvdy,
-            Array &dudt, Array &dvdt, double g, double h, double dx_inv,
-            double dy_inv, double dt) {
+void stage3(Array &u, Array &v, Array &e, Array &u2, Array &v2, Array &e2,
+            double g, double h, double dx_inv, double dy_inv, double dt) {
   /**
-   * Evaluate right hand side of the equations
+   * Evaluate stage 3 of the RK time stepper
+   *
+   * u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
+   *
    */
-
-  auto rhs_dedx = [dt, g, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
+  // u: elevation x gradient
+  auto rhs_u3 = [dt, g, dx_inv](auto tuple) {
+    auto [e2, u2, out] = tuple;
+    auto dedx = (e2(1, 0) - e2(0, 0)) * dx_inv;
+    out(0, 0) *= 1.0 / 3;
+    out(0, 0) += 2.0 / 3 * (u2(0, 0) - dt * g * dedx);
   };
-  dr::mhp::stencil_for_each_2d({1, 1, 0, 0}, {0, 0}, rhs_dedx, e2, dudt);
-  auto rhs_dedy = [dt, g, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(0, 1) - in(0, 0)) * dy_inv;
-  };
-  dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e2, dvdt);
+  dr::mhp::stencil_for_each_fuse3({1, 1, 0, 0}, rhs_u3, e2, u2, u);
+  dr::mhp::halo(u).exchange();
 
-  // fused divergence(uv) and assignment kernel
+  // v: elevation y gradient
+  auto rhs_v3 = [dt, g, dy_inv](auto tuple) {
+    auto [e2, v2, out] = tuple;
+    auto dedy = (e2(0, 0) - e2(0, -1)) * dy_inv;
+    out(0, 0) *= 1.0 / 3;
+    out(0, 0) += 2.0 / 3 * (v2(0, 0) - dt * g * dedy);
+  };
+  dr::mhp::stencil_for_each_fuse3({0, 0, 1, 0}, rhs_v3, e2, v2, v);
+  dr::mhp::halo(v).exchange();
+
+  // e: divergence of (u, v)
   auto rhs_e2 = [dt, h, dx_inv, dy_inv](auto tuple) {
-    auto [u2, v2, e2, out] = tuple;
+    auto [e2, u2, v2, out] = tuple;
     auto dudx = (u2(0, 0) - u2(-1, 0)) * dx_inv;
     auto dvdy = (v2(0, 1) - v2(0, 0)) * dy_inv;
     out(0, 0) *= 1.0 / 3;
     out(0, 0) += 2.0 / 3 * (e2(0, 0) - dt * h * (dudx + dvdy));
   };
-  dr::mhp::stencil_for_each_fuse4({1, 0, 0, 0}, {0, 0}, rhs_e2, u2, v2, e2, e);
+  dr::mhp::stencil_for_each_fuse4({1, 0, 0, 0}, rhs_e2, e2, u2, v2, e);
+  dr::mhp::halo(e).exchange();
 };
 
 int run(int n, bool benchmark_mode) {
@@ -255,33 +238,27 @@ int run(int n, bool benchmark_mode) {
   // state variables
   // water elevation at T points
   Array e({nx + 1, ny}, dist);
-  dr::mhp::fill(e, 0.0);
   // x velocity at U points
   Array u({nx + 1, ny}, dist);
-  dr::mhp::fill(u, 0.0);
   // y velocity at V points
   Array v({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(e, 0.0);
+  dr::mhp::fill(u, 0.0);
   dr::mhp::fill(v, 0.0);
 
   // state for RK stages
   Array e1({nx + 1, ny}, dist);
-  dr::mhp::fill(e1, 0.0);
   Array u1({nx + 1, ny}, dist);
   Array v1({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(e1, 0.0);
+  dr::mhp::fill(u1, 0.0);
+  dr::mhp::fill(v1, 0.0);
   Array e2({nx + 1, ny}, dist);
   Array u2({nx + 1, ny}, dist);
   Array v2({nx + 1, ny + 1}, dist);
-
-  // time tendencies
-  // NOTE not needed if rhs kernels are fused with RK stage assignment
-  Array dedt({nx + 1, ny}, dist);
-  Array dudt({nx + 1, ny}, dist);
-  Array dvdt({nx + 1, ny + 1}, dist);
-
-  // temporary arrays
-  // FIXME these are not necessary if dedt is evaluated in one go
-  Array dudx({nx + 1, ny}, dist);
-  Array dvdy({nx + 1, ny}, dist);
+  dr::mhp::fill(e2, 0.0);
+  dr::mhp::fill(u2, 0.0);
+  dr::mhp::fill(v2, 0.0);
 
   // initial condition for elevation
   for (std::size_t i = 1; i < e.mdspan().extent(0); i++) {
@@ -293,16 +270,7 @@ int run(int n, bool benchmark_mode) {
   }
   dr::mhp::halo(e).exchange();
 
-  auto add = [](auto ops) { return ops.first + ops.second; };
   auto max = [](double x, double y) { return std::max(x, y); };
-  auto rk_update2 = [](auto ops) {
-    return 0.75 * std::get<0>(ops) +
-           0.25 * (std::get<1>(ops) + std::get<2>(ops));
-  };
-  auto rk_update3 = [](auto ops) {
-    return 1.0 / 3.0 * std::get<0>(ops) +
-           2.0 / 3.0 * (std::get<1>(ops) + std::get<2>(ops));
-  };
 
   std::size_t i_export = 0;
   double next_t_export = 0.0;
@@ -342,34 +310,9 @@ int run(int n, bool benchmark_mode) {
     }
 
     // step
-    // RK stage 1: u1 = u + dt*rhs(u)
-    stage1(u, v, e, u1, v1, e1, dudx, dvdy, dudt, dvdt, dedt, g, h, dx_inv,
-           dy_inv, dt);
-    dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
-    dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
-    dr::mhp::halo(u1).exchange();
-    dr::mhp::halo(v1).exchange();
-    dr::mhp::halo(e1).exchange();
-
-    // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    stage2(u, v, e, u1, v1, e1, u2, v2, e2, dudx, dvdy, dudt, dvdt, g, h,
-           dx_inv, dy_inv, dt);
-    dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
-                       rk_update2);
-    dr::mhp::transform(dr::mhp::views::zip(v, v1, dvdt), v2.begin(),
-                       rk_update2);
-    dr::mhp::halo(u2).exchange();
-    dr::mhp::halo(v2).exchange();
-    dr::mhp::halo(e2).exchange();
-
-    // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    stage3(u, v, e, u1, v1, e1, u2, v2, e2, dudx, dvdy, dudt, dvdt, g, h,
-           dx_inv, dy_inv, dt);
-    dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(), rk_update3);
-    dr::mhp::transform(dr::mhp::views::zip(v, v2, dvdt), v.begin(), rk_update3);
-    dr::mhp::halo(u).exchange();
-    dr::mhp::halo(v).exchange();
-    dr::mhp::halo(e).exchange();
+    stage1(u, v, e, u1, v1, e1, g, h, dx_inv, dy_inv, dt);
+    stage2(u, v, e, u1, v1, e1, u2, v2, e2, g, h, dx_inv, dy_inv, dt);
+    stage3(u, v, e, u2, v2, e2, g, h, dx_inv, dy_inv, dt);
   }
   auto toc = std::chrono::steady_clock::now();
   std::chrono::duration<double> duration = toc - tic;
