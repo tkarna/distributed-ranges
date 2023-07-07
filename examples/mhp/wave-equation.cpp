@@ -102,6 +102,61 @@ void rhs(Array &u, Array &v, Array &e, Array &dudx, Array &dvdy, Array &dudt,
   dr::mhp::stencil_for_each_fuse3({1, 0, 0, 0}, {0, 0}, rhs_div_uv, u, v, dedt);
 };
 
+void stage1(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
+            Array &dudx, Array &dvdy, Array &dudt, Array &dvdt, Array &dedt,
+            double g, double h, double dx_inv, double dy_inv, double dt) {
+  /**
+   * Evaluate right hand side of the equations
+   */
+
+  auto rhs_dedx = [dt, g, dx_inv](auto v) {
+    auto [in, out] = v;
+    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
+  };
+  dr::mhp::stencil_for_each_2d({1, 1, 0, 0}, {0, 0}, rhs_dedx, e, dudt);
+  auto rhs_dedy = [dt, g, dy_inv](auto v) {
+    auto [in, out] = v;
+    out(0, 0) = -dt * g * (in(0, 1) - in(0, 0)) * dy_inv;
+  };
+  dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e, dvdt);
+
+  // auto rhs_dudx = [dt, h, dx_inv](auto v) {
+  //   auto [in, out] = v;
+  //   out(0, 0) = -dt * h * (in(0, 0) - in(-1, 0)) * dx_inv;
+  // };
+  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dudx, u, dudx);
+
+  // auto rhs_dvdy = [dt, h, dy_inv](auto v) {
+  //   auto [in, out] = v;
+  //   out(0, 0) = -dt * h * (in(0, 1) - in(0, 0)) * dy_inv;
+  // };
+  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dvdy, v, dvdy);
+  // auto add = [](auto ops) { return ops.first + ops.second; };
+  // dr::mhp::transform(dr::mhp::views::zip(dudx, dvdy), dedt.begin(), add);
+
+  // fused divergence(uv) = dudx + dvdy kernel
+  // NOTE in this case fusion is easy as the stencil_extents and
+  // output_offset are the same in both cases
+  // auto rhs_div_uv = [dt, h, dx_inv, dy_inv](auto tuple) {
+  //   auto [u, v, out] = tuple;
+  //   auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
+  //   auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
+  //   out(0, 0) = -dt * h * (dudx + dvdy);
+  // };
+  // dr::mhp::stencil_for_each_fuse3({1, 0, 0, 0}, {0, 0}, rhs_div_uv, u, v,
+  // dedt); auto add = [](auto ops) { return ops.first + ops.second; };
+  // dr::mhp::transform(dr::mhp::views::zip(e, dedt), e1.begin(), add);
+
+  // fused divergence(uv) and assignment kernel
+  auto rhs_e1 = [dt, h, dx_inv, dy_inv](auto tuple) {
+    auto [u, v, e, out] = tuple;
+    auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
+    auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
+    out(0, 0) = e(0, 0) - dt * h * (dudx + dvdy);
+  };
+  dr::mhp::stencil_for_each_fuse4({1, 0, 0, 0}, {0, 0}, rhs_e1, u, v, e, e1);
+};
+
 int run(int n, bool benchmark_mode) {
 
   // Arakava C grid
@@ -177,6 +232,7 @@ int run(int n, bool benchmark_mode) {
 
   // state for RK stages
   Array e1({nx + 1, ny}, dist);
+  dr::mhp::fill(e1, 0.0);
   Array u1({nx + 1, ny}, dist);
   Array v1({nx + 1, ny + 1}, dist);
   Array e2({nx + 1, ny}, dist);
@@ -254,10 +310,10 @@ int run(int n, bool benchmark_mode) {
 
     // step
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, dudx, dvdy, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
+    stage1(u, v, e, u1, v1, e1, dudx, dvdy, dudt, dvdt, dedt, g, h, dx_inv,
+           dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
-    dr::mhp::transform(dr::mhp::views::zip(e, dedt), e1.begin(), add);
     dr::mhp::halo(u1).exchange();
     dr::mhp::halo(v1).exchange();
     dr::mhp::halo(e1).exchange();
