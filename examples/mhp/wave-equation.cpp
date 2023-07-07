@@ -76,20 +76,30 @@ void rhs(Array &u, Array &v, Array &e, Array &dudx, Array &dvdy, Array &dudt,
   };
   dr::mhp::stencil_for_each_2d({0, 0, 0, 1}, {0, 1}, rhs_dedy, e, dvdt);
 
-  auto rhs_dudx = [dt, h, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * h * (in(0, 0) - in(-1, 0)) * dx_inv;
-  };
-  dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dudx, u, dudx);
+  // auto rhs_dudx = [dt, h, dx_inv](auto v) {
+  //   auto [in, out] = v;
+  //   out(0, 0) = -dt * h * (in(0, 0) - in(-1, 0)) * dx_inv;
+  // };
+  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dudx, u, dudx);
 
-  auto rhs_dvdy = [dt, h, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * h * (in(0, 1) - in(0, 0)) * dy_inv;
+  // auto rhs_dvdy = [dt, h, dy_inv](auto v) {
+  //   auto [in, out] = v;
+  //   out(0, 0) = -dt * h * (in(0, 1) - in(0, 0)) * dy_inv;
+  // };
+  // dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dvdy, v, dvdy);
+  // auto add = [](auto ops) { return ops.first + ops.second; };
+  // dr::mhp::transform(dr::mhp::views::zip(dudx, dvdy), dedt.begin(), add);
+
+  // fused divergence(uv) = dudx + dvdy kernel
+  // NOTE in this case fusion is easy as the stencil_extents and
+  // output_offset are the same in both cases
+  auto rhs_div_uv = [dt, h, dx_inv, dy_inv](auto tuple) {
+    auto [u, v, out] = tuple;
+    auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
+    auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
+    out(0, 0) = -dt * h * (dudx + dvdy);
   };
-  dr::mhp::stencil_for_each_2d({1, 0, 0, 0}, {0, 0}, rhs_dvdy, v, dvdy);
-  // FIXME fuse rhs_dudx/dvdy to a single kernel
-  auto add = [](auto ops) { return ops.first + ops.second; };
-  dr::mhp::transform(dr::mhp::views::zip(dudx, dvdy), dedt.begin(), add);
+  dr::mhp::stencil_for_each_fuse3({1, 0, 0, 0}, {0, 0}, rhs_div_uv, u, v, dedt);
 };
 
 int run(int n, bool benchmark_mode) {
