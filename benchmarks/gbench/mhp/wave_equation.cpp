@@ -144,7 +144,8 @@ void stage1(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto u1_view = dr::mhp::views::submdspan(u1.view(), start, end);
     dr::mhp::stencil_for_each(rhs_u1, e_view, u_view, u1_view);
-    dr::mhp::halo(u1).exchange();
+    dr::mhp::halo(u1).exchange_begin();
+    dr::mhp::halo(u1).exchange_finalize();
   }
 
   // v: elevation y gradient
@@ -162,7 +163,8 @@ void stage1(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto v1_view = dr::mhp::views::submdspan(v1.view(), start, end);
     dr::mhp::stencil_for_each(rhs_v1, e_view, v_view, v1_view);
-    dr::mhp::halo(v1).exchange();
+    dr::mhp::halo(v1).exchange_begin();
+    dr::mhp::halo(v1).exchange_finalize();
   }
 
   // e: divergence of (u, v)
@@ -182,7 +184,8 @@ void stage1(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto e1_view = dr::mhp::views::submdspan(e1.view(), start, end);
     dr::mhp::stencil_for_each(rhs_e1, e_view, u_view, v_view, e1_view);
-    dr::mhp::halo(e1).exchange();
+    dr::mhp::halo(e1).exchange_begin();
+    dr::mhp::halo(e1).exchange_finalize();
   }
 };
 
@@ -211,7 +214,8 @@ void stage2(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto u2_view = dr::mhp::views::submdspan(u2.view(), start, end);
     dr::mhp::stencil_for_each(rhs_u2, e1_view, u1_view, u_view, u2_view);
-    dr::mhp::halo(u2).exchange();
+    dr::mhp::halo(u2).exchange_begin();
+    dr::mhp::halo(u2).exchange_finalize();
   }
 
   // v: elevation y gradient
@@ -230,7 +234,8 @@ void stage2(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto v2_view = dr::mhp::views::submdspan(v2.view(), start, end);
     dr::mhp::stencil_for_each(rhs_v2, e1_view, v1_view, v_view, v2_view);
-    dr::mhp::halo(v2).exchange();
+    dr::mhp::halo(v2).exchange_begin();
+    dr::mhp::halo(v2).exchange_finalize();
   }
 
   // e: divergence of (u, v)
@@ -252,7 +257,8 @@ void stage2(Array &u, Array &v, Array &e, Array &u1, Array &v1, Array &e1,
     auto e2_view = dr::mhp::views::submdspan(e2.view(), start, end);
     dr::mhp::stencil_for_each(rhs_e2, e1_view, u1_view, v1_view, e_view,
                               e2_view);
-    dr::mhp::halo(e2).exchange();
+    dr::mhp::halo(e2).exchange_begin();
+    dr::mhp::halo(e2).exchange_finalize();
   }
 };
 
@@ -280,7 +286,8 @@ void stage3(Array &u, Array &v, Array &e, Array &u2, Array &v2, Array &e2,
     auto u2_view = dr::mhp::views::submdspan(u2.view(), start, end);
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     dr::mhp::stencil_for_each(rhs_u3, e2_view, u2_view, u_view);
-    dr::mhp::halo(u).exchange();
+    dr::mhp::halo(u).exchange_begin();
+    dr::mhp::halo(u).exchange_finalize();
   }
 
   // v: elevation y gradient
@@ -299,7 +306,8 @@ void stage3(Array &u, Array &v, Array &e, Array &u2, Array &v2, Array &e2,
     auto v2_view = dr::mhp::views::submdspan(v2.view(), start, end);
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     dr::mhp::stencil_for_each(rhs_v3, e2_view, v2_view, v_view);
-    dr::mhp::halo(v).exchange();
+    dr::mhp::halo(v).exchange_begin();
+    dr::mhp::halo(v).exchange_finalize();
   }
 
   // e: divergence of (u, v)
@@ -320,7 +328,8 @@ void stage3(Array &u, Array &v, Array &e, Array &u2, Array &v2, Array &e2,
     auto v2_view = dr::mhp::views::submdspan(v2.view(), start, end);
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
     dr::mhp::stencil_for_each(rhs_e3, e2_view, u2_view, v2_view, e_view);
-    dr::mhp::halo(e).exchange();
+    dr::mhp::halo(e).exchange_begin();
+    dr::mhp::halo(e).exchange_finalize();
   }
 };
 
@@ -439,7 +448,8 @@ int run(
       }
     }
   }
-  dr::mhp::halo(e).exchange();
+  dr::mhp::halo(e).exchange_begin();
+  dr::mhp::halo(e).exchange_finalize();
 
   auto add = [](auto ops) { return ops.first + ops.second; };
   auto max = [](double x, double y) { return std::max(x, y); };
@@ -501,9 +511,12 @@ int run(
       dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
       dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
       dr::mhp::transform(dr::mhp::views::zip(e, dedt), e1.begin(), add);
-      dr::mhp::halo(u1).exchange();
-      dr::mhp::halo(v1).exchange();
-      dr::mhp::halo(e1).exchange();
+      dr::mhp::halo(u1).exchange_begin();
+      dr::mhp::halo(v1).exchange_begin();
+      dr::mhp::halo(e1).exchange_begin();
+      dr::mhp::halo(u1).exchange_finalize();
+      dr::mhp::halo(v1).exchange_finalize();
+      dr::mhp::halo(e1).exchange_finalize();
 
       // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
       rhs(u1, v1, e1, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
@@ -513,9 +526,12 @@ int run(
                          rk_update2);
       dr::mhp::transform(dr::mhp::views::zip(e, e1, dedt), e2.begin(),
                          rk_update2);
-      dr::mhp::halo(u2).exchange();
-      dr::mhp::halo(v2).exchange();
-      dr::mhp::halo(e2).exchange();
+      dr::mhp::halo(u2).exchange_begin();
+      dr::mhp::halo(v2).exchange_begin();
+      dr::mhp::halo(e2).exchange_begin();
+      dr::mhp::halo(u2).exchange_finalize();
+      dr::mhp::halo(v2).exchange_finalize();
+      dr::mhp::halo(e2).exchange_finalize();
 
       // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
       rhs(u2, v2, e2, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
@@ -525,9 +541,12 @@ int run(
                          rk_update3);
       dr::mhp::transform(dr::mhp::views::zip(e, e2, dedt), e.begin(),
                          rk_update3);
-      dr::mhp::halo(u).exchange();
-      dr::mhp::halo(e).exchange();
-      dr::mhp::halo(v).exchange();
+      dr::mhp::halo(u).exchange_begin();
+      dr::mhp::halo(v).exchange_begin();
+      dr::mhp::halo(e).exchange_begin();
+      dr::mhp::halo(u).exchange_finalize();
+      dr::mhp::halo(v).exchange_finalize();
+      dr::mhp::halo(e).exchange_finalize();
     }
   }
   auto toc = std::chrono::steady_clock::now();
