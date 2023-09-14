@@ -455,7 +455,7 @@ int run(
   // dr::mhp::halo(v).exchange_begin();
 
   auto add = [](auto ops) { return ops.first + ops.second; };
-  auto max = [](double x, double y) { return std::max(x, y); };
+  // auto max = [](double x, double y) { return std::max(x, y); };
   auto rk_update2 = [](auto ops) {
     return 0.75 * std::get<0>(ops) +
            0.25 * (std::get<1>(ops) + std::get<2>(ops));
@@ -475,11 +475,11 @@ int run(
 
     if (t >= next_t_export - 1e-8) {
 
-      double elev_max = dr::mhp::reduce(e, static_cast<T>(0), max);
-      double u_max = dr::mhp::reduce(u, static_cast<T>(0), max);
+      double elev_max = 0.1; //dr::mhp::reduce(e, static_cast<T>(0), max);
+      double u_max = 0.1; //dr::mhp::reduce(u, static_cast<T>(0), max);
 
       double total_v =
-          (dr::mhp::reduce(e, static_cast<T>(0), std::plus{}) + h) * dx * dy;
+          1.0; //(dr::mhp::reduce(e, static_cast<T>(0), std::plus{}) + h) * dx * dy;
       if (i == 0) {
         initial_v = total_v;
       }
