@@ -29,7 +29,40 @@ using Array = dr::mhp::distributed_mdarray<T, 2>;
 // gravitational acceleration
 constexpr double g = 9.81;
 // water depth
-constexpr double h = 1.0;
+constexpr double h = 1.0;  // FIXME remove
+// Coriolis parameter
+constexpr double f = 10.0;
+// Length scale of geostrophic gyre
+constexpr double sigma = 0.4;
+
+// Arakava C grid object
+//
+// T points at cell centers
+// U points at center of x edges
+// V points at center of y edges
+// F points at vertices
+//
+//   |       |       |       |       |
+//   f---v---f---v---f---v---f---v---f-
+//   |       |       |       |       |
+//   u   t   u   t   u   t   u   t   u
+//   |       |       |       |       |
+//   f---v---f---v---f---v---f---v---f-
+struct ArakawaCGrid {
+  double xmin, xmax;     // x limits in physical coordinates (U point min/max)
+  double ymin, ymax;     // y limits in physical coordinates (V point min/max)
+  std::size_t nx, ny;    // number of cells (T points)
+  double lx, ly;         // grid size in physical coordinates
+  double dx, dy;         // cell size in physical coordinates
+  double dx_inv, dy_inv; // reciprocial dx and dy
+
+  ArakawaCGrid(double _xmin, double _xmax, double _ymin, double _ymax, std::size_t _nx, std::size_t _ny) : xmin(_xmin), xmax(_xmax), ymin(_ymin), ymax(_ymax), nx(_nx), ny(_ny), lx(_xmax - _xmin), ly(_ymax - _ymin){
+    dx = lx / nx;
+    dy = ly / ny;
+    dx_inv = 1.0 / dx;
+    dy_inv = 1.0 / dy;
+  };
+};
 
 // FIXME
 // Get number of read/write bytes and flops for a single time step
@@ -54,22 +87,78 @@ double exact_elev(double x, double y, double t, double lx, double ly) {
   /**
    * Exact solution for elevation field.
    *
-   * Returns time-dependent elevation of a 2D standing wave in a
-   * rectangular domain.
+   * Returns time-dependent elevation of a 2D stationary gyre.
    */
-  double amp = 0.5;
-  double c = std::sqrt(g * h);
-  std::size_t n = 1;
-  double sol_x = std::cos(2 * n * M_PI * x / lx);
-  std::size_t m = 1;
-  double sol_y = std::cos(2 * m * M_PI * y / ly);
-  double omega = c * M_PI * std::hypot(n / lx, m / ly);
-  double sol_t = std::cos(2 * omega * t);
-  return amp * sol_x * sol_y * sol_t;
+  double amp = 0.02;
+  return amp*exp(-(x*x + y*y)/sigma/sigma);
+}
+
+double exact_u(double x, double y, double t, double lx, double ly) {
+  /**
+   * Exact solution for x velocity field.
+   *
+   * Returns time-dependent velocity of a 2D stationary gyre.
+   */
+  double elev = exact_elev(x, y, t, lx, ly);
+  return g/f*2*y/sigma/sigma*elev;
+}
+
+double exact_v(double x, double y, double t, double lx, double ly) {
+  /**
+   * Exact solution for y velocity field.
+   *
+   * Returns time-dependent velocity of a 2D stationary gyre.
+   */
+  double elev = exact_elev(x, y, t, lx, ly);
+  return -g/f*2*x/sigma/sigma*elev;
+}
+
+double bathymetry(double x, double y, double t, double lx, double ly) {
+  /**
+   * Bathymetry, i.e. water depth at rest.
+   *
+   */
+  return 1.0;
 }
 
 double initial_elev(double x, double y, double lx, double ly) {
   return exact_elev(x, y, 0.0, lx, ly);
+}
+
+double initial_u(double x, double y, double lx, double ly) {
+  return exact_u(x, y, 0.0, lx, ly);
+}
+
+double initial_v(double x, double y, double lx, double ly) {
+  return exact_v(x, y, 0.0, lx, ly);
+}
+
+void set_field(Array &arr,
+               std::function<double(double, double, double, double)> func,
+               ArakawaCGrid &grid,
+               double x_offset = 0.0, double y_offset = 0.0, int row_offset = 0) {
+  /**
+   * Assign Array values based on coordinate-dependent function `func`.
+   * 
+   */
+  for (auto segment : dr::ranges::segments(arr)) {
+    if (dr::ranges::rank(segment) == std::size_t(comm_rank)) {
+      auto origin = segment.origin();
+      auto s = segment.mdspan();
+
+      for (std::size_t i = 0; i < s.extent(0); i++) {
+        std::size_t global_i = i + origin[0];
+        if (global_i > 0) {
+          for (std::size_t j = 0; j < s.extent(1); j++) {
+            std::size_t global_j = j + origin[1];
+            T x = grid.xmin + x_offset + (global_i + row_offset) * grid.dx;
+            T y = grid.ymin + y_offset + global_j * grid.dy;
+            s(i, j) = func(x, y, grid.lx, grid.ly);
+          }
+        }
+      }
+    }
+  }
 }
 
 void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
@@ -129,21 +218,7 @@ void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
 int run(
     int n, bool benchmark_mode,
     std::function<void()> iter_callback = []() {}) {
-
-  // Arakava C grid
-  //
-  // T points at cell centers
-  // U points at center of x edges
-  // V points at center of y edges
-  // F points at vertices
-  //
-  //   |       |       |       |       |
-  //   f---v---f---v---f---v---f---v---f-
-  //   |       |       |       |       |
-  //   u   t   u   t   u   t   u   t   u
-  //   |       |       |       |       |
-  //   f---v---f---v---f---v---f---v---f-
-
+  // construct grid
   // number of cells in x, y direction
   std::size_t nx = n;
   std::size_t ny = n;
@@ -155,6 +230,8 @@ int run(
   const double dy = ly / ny;
   const double dx_inv = 1.0 / dx;
   const double dy_inv = 1.0 / dy;
+  ArakawaCGrid grid(xmin, xmax, ymin, ymax, nx, ny);
+
   std::size_t halo_radius = 1;
   auto dist = dr::mhp::distribution().halo(halo_radius);
 
@@ -219,27 +296,12 @@ int run(
   Array dudt({nx + 1, ny}, dist);
   Array dvdt({nx + 1, ny + 1}, dist);
 
-  // initial condition for elevation
-  for (auto segment : dr::ranges::segments(e)) {
-    if (dr::ranges::rank(segment) == std::size_t(comm_rank)) {
-      auto origin = segment.origin();
-      auto e = segment.mdspan();
-
-      for (std::size_t i = 0; i < e.extent(0); i++) {
-        std::size_t global_i = i + origin[0];
-        if (global_i > 0) {
-          for (std::size_t j = 0; j < e.extent(1); j++) {
-            std::size_t global_j = j + origin[1];
-            T x = xmin + dx / 2 + (global_i - 1) * dx;
-            T y = ymin + dy / 2 + global_j * dy;
-            e(i, j) = initial_elev(x, y, lx, ly);
-          }
-        }
-      }
-    }
-  }
+  // set initial conditions
+  set_field(e, initial_elev, grid, grid.dx / 2, grid.dy / 2, -1);
   dr::mhp::halo(e).exchange_begin();
+  set_field(u, initial_u, grid, 0.0, grid.dy / 2, 0);
   dr::mhp::halo(u).exchange_begin();
+  set_field(v, initial_v, grid, grid.dx / 2, 0.0, -1);
   dr::mhp::halo(v).exchange_begin();
 
   auto add = [](auto ops) { return ops.first + ops.second; };
@@ -275,8 +337,8 @@ int run(
 
       if (comm_rank == 0) {
         printf("%2lu %4lu %.3f ", i_export, i, t);
-        printf("elev=%7.5f ", elev_max);
-        printf("u=%7.5f ", u_max);
+        printf("elev=%7.8f ", elev_max);
+        printf("u=%7.8f ", u_max);
         printf("dV=% 6.3e ", diff_v);
         printf("\n");
       }
