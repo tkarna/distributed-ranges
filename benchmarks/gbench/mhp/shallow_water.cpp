@@ -136,7 +136,8 @@ double bathymetry(double x, double y, double lx, double ly) {
    * Bathymetry, i.e. water depth at rest.
    *
    */
-  return 1.0;
+  // return 1.0;
+  return 10*exact_elev(x, y, 0.0, lx, ly) + 1.0; // FIXME nontrivial for testing
 }
 
 double initial_elev(double x, double y, double lx, double ly) {
@@ -179,7 +180,8 @@ void set_field(Array &arr,
   }
 }
 
-void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
+void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
+         Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
    * Evaluate right hand side of the equations
@@ -228,22 +230,57 @@ void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
     dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, dvdt_view);
   }
 
+  auto rhs_hu = [](auto args) {
+    auto [u, e, h, out] = args;
+    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(u.mdspan().extent(0)-1),
+        static_cast<std::size_t>(u.mdspan().extent(1))};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
+  }
+  dr::mhp::halo(hu).exchange_begin();
+  dr::mhp::halo(hu).exchange_finalize();
+
+  auto rhs_hv = [](auto args) {
+    auto [v, e, h, out] = args;
+    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(0, -1) + h(0, -1)) * v(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 1};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(v.mdspan().extent(0)),
+        static_cast<std::size_t>(v.mdspan().extent(1)-1)};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hv_view = dr::mhp::views::submdspan(hv.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hv, v_view, e_view, h_view, hv_view);
+  }
+  dr::mhp::halo(hv).exchange_begin();
+  dr::mhp::halo(hv).exchange_finalize();
+
   auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
-    auto [u, v, h, out] = args;
-    auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
-    auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
-    out(0, 0) = -dt * h(0, 0) * (dudx + dvdy);
+    auto [hu, hv, out] = args;
+    auto dhudx = (hu(0, 0) - hu(-1, 0)) * dx_inv;
+    auto dhvdy = (hv(0, 1) - hv(0, 0)) * dy_inv;
+    out(0, 0) = -dt * (dhudx + dhvdy);
   };
   {
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{
         static_cast<std::size_t>(u.mdspan().extent(0)),
         static_cast<std::size_t>(u.mdspan().extent(1))};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    auto hv_view = dr::mhp::views::submdspan(hv.view(), start, end);
     auto dedt_view = dr::mhp::views::submdspan(dedt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_div, u_view, v_view, h_view, dedt_view);
+    dr::mhp::stencil_for_each(rhs_div, hu_view, hv_view, dedt_view);
   }
 };
 
@@ -299,6 +336,11 @@ int run(
   Array h({nx + 1, ny}, dist);
   // total depth, e + h
   Array H({nx + 1, ny}, dist);
+
+  Array hu({nx + 1, ny}, dist);
+  dr::mhp::fill(hu, 0.0);
+  Array hv({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(hu, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -404,7 +446,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u, v, e, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -413,7 +455,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs(u1, v1, e1, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u1, v1, e1, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -425,7 +467,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs(u2, v2, e2, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u2, v2, e2, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
