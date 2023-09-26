@@ -162,41 +162,53 @@ void set_field(Array &arr,
 }
 
 void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
-         double g, double h, double dx_inv, double dy_inv, double dt) {
+         double g, double h, double f, double dx_inv, double dy_inv, double dt) {
   /**
    * Evaluate right hand side of the equations
    */
   dr::mhp::halo(e).exchange_finalize();
-  auto rhs_dedx = [dt, g, dx_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(1, 0) - in(0, 0)) * dx_inv;
+  dr::mhp::halo(v).exchange_finalize();
+  auto rhs_dudt = [dt, g, f, dx_inv](auto tuple) {
+    auto [e, v, out] = tuple;
+    auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
+    auto v_at_u = 0.25 * (v(0, 0) + v(1, 0) + v(0, 1) + v(1, 1));
+    out(0, 0) = dt * (-g * dedx + f * v_at_u);
   };
   {
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{
         static_cast<std::size_t>(e.mdspan().extent(0) - 1),
         static_cast<std::size_t>(e.mdspan().extent(1))};
+    std::array<std::size_t, 2> end_v{
+        static_cast<std::size_t>(v.mdspan().extent(0) - 1),
+        static_cast<std::size_t>(v.mdspan().extent(1))};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end_v);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dedx, e_view, dudt_view);
+    dr::mhp::stencil_for_each(rhs_dudt, e_view, v_view, dudt_view);
   }
 
-  auto rhs_dedy = [dt, g, dy_inv](auto v) {
-    auto [in, out] = v;
-    out(0, 0) = -dt * g * (in(0, 0) - in(0, -1)) * dy_inv;
+  dr::mhp::halo(u).exchange_finalize();
+  auto rhs_dvdt = [dt, g, f, dy_inv](auto tuple) {
+    auto [e, u, out] = tuple;
+    auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
+    auto u_at_v = 0.25 * (u(0, 0) + u(0, -1) + u(-1, 0) + u(-1, -1));
+    out(0, 0) = dt * (-g * dedy - f * u_at_v);
   };
   {
     std::array<std::size_t, 2> start{0, 1};
     std::array<std::size_t, 2> end{
         static_cast<std::size_t>(e.mdspan().extent(0)),
         static_cast<std::size_t>(e.mdspan().extent(1))};
+    std::array<std::size_t, 2> end_u{
+        static_cast<std::size_t>(u.mdspan().extent(0)),
+        static_cast<std::size_t>(u.mdspan().extent(1))};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end_u);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dedy, e_view, dvdt_view);
+    dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, dvdt_view);
   }
 
-  dr::mhp::halo(u).exchange_finalize();
-  dr::mhp::halo(v).exchange_finalize();
   auto rhs_div = [dt, h, dx_inv, dy_inv](auto args) {
     auto [u, v, out] = args;
     auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
@@ -355,7 +367,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
+    rhs(u, v, e, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -364,7 +376,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs(u1, v1, e1, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
+    rhs(u1, v1, e1, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -376,7 +388,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs(u2, v2, e2, dudt, dvdt, dedt, g, h, dx_inv, dy_inv, dt);
+    rhs(u2, v2, e2, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
