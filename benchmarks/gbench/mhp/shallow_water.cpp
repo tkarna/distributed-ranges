@@ -28,8 +28,6 @@ using Array = dr::mhp::distributed_mdarray<T, 2>;
 
 // gravitational acceleration
 constexpr double g = 9.81;
-// water depth
-constexpr double h = 1.0;  // FIXME remove
 // Coriolis parameter
 constexpr double f = 10.0;
 // Length scale of geostrophic gyre
@@ -133,7 +131,7 @@ double exact_v(double x, double y, double t, double lx, double ly) {
   return -g/f*2*x/sigma/sigma*elev;
 }
 
-double bathymetry(double x, double y, double t, double lx, double ly) {
+double bathymetry(double x, double y, double lx, double ly) {
   /**
    * Bathymetry, i.e. water depth at rest.
    *
@@ -182,7 +180,7 @@ void set_field(Array &arr,
 }
 
 void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
-         double g, double h, double f, double dx_inv, double dy_inv, double dt) {
+         Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
    * Evaluate right hand side of the equations
    */
@@ -230,11 +228,11 @@ void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
     dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, dvdt_view);
   }
 
-  auto rhs_div = [dt, h, dx_inv, dy_inv](auto args) {
-    auto [u, v, out] = args;
+  auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
+    auto [u, v, h, out] = args;
     auto dudx = (u(0, 0) - u(-1, 0)) * dx_inv;
     auto dvdy = (v(0, 1) - v(0, 0)) * dy_inv;
-    out(0, 0) = -dt * h * (dudx + dvdy);
+    out(0, 0) = -dt * h(0, 0) * (dudx + dvdy);
   };
   {
     std::array<std::size_t, 2> start{1, 0};
@@ -243,8 +241,9 @@ void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
         static_cast<std::size_t>(u.mdspan().extent(1))};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
     auto dedt_view = dr::mhp::views::submdspan(dedt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_div, u_view, v_view, dedt_view);
+    dr::mhp::stencil_for_each(rhs_div, u_view, v_view, h_view, dedt_view);
   }
 };
 
@@ -282,11 +281,47 @@ int run(
     std::cout << std::endl;
   }
 
-  // compute time step
   double t_end = 1.0;
   double t_export = 0.02;
 
-  double c = std::sqrt(g * h);
+  // state variables
+  // water elevation at T points
+  Array e({nx + 1, ny}, dist);
+  dr::mhp::fill(e, 0.0);
+  // x velocity at U points
+  Array u({nx + 1, ny}, dist);
+  dr::mhp::fill(u, 0.0);
+  // y velocity at V points
+  Array v({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(v, 0.0);
+
+  // bathymetry (water depth at rest)
+  Array h({nx + 1, ny}, dist);
+  // total depth, e + h
+  Array H({nx + 1, ny}, dist);
+
+  // set bathymetry
+  set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
+  dr::mhp::halo(h).exchange();
+
+  // state for RK stages
+  Array e1({nx + 1, ny}, dist);
+  Array u1({nx + 1, ny}, dist);
+  Array v1({nx + 1, ny + 1}, dist);
+  Array e2({nx + 1, ny}, dist);
+  Array u2({nx + 1, ny}, dist);
+  Array v2({nx + 1, ny + 1}, dist);
+
+  // time tendencies
+  // NOTE not needed if rhs kernels are fused with RK stage assignment
+  Array dedt({nx + 1, ny}, dist);
+  Array dudt({nx + 1, ny}, dist);
+  Array dvdt({nx + 1, ny + 1}, dist);
+
+  // compute time step
+  auto max = [](double x, double y) { return std::max(x, y); };
+  double h_max = dr::mhp::reduce(h, static_cast<T>(0), max);
+  double c = std::sqrt(g * h_max);
   double alpha = 0.5;
   double dt = alpha * dx / c;
   dt = t_export / static_cast<int>(ceil(t_export / dt));
@@ -304,31 +339,6 @@ int run(
     std::cout << nt << " time steps" << std::endl;
   }
 
-  // state variables
-  // water elevation at T points
-  Array e({nx + 1, ny}, dist);
-  dr::mhp::fill(e, 0.0);
-  // x velocity at U points
-  Array u({nx + 1, ny}, dist);
-  dr::mhp::fill(u, 0.0);
-  // y velocity at V points
-  Array v({nx + 1, ny + 1}, dist);
-  dr::mhp::fill(v, 0.0);
-
-  // state for RK stages
-  Array e1({nx + 1, ny}, dist);
-  Array u1({nx + 1, ny}, dist);
-  Array v1({nx + 1, ny + 1}, dist);
-  Array e2({nx + 1, ny}, dist);
-  Array u2({nx + 1, ny}, dist);
-  Array v2({nx + 1, ny + 1}, dist);
-
-  // time tendencies
-  // NOTE not needed if rhs kernels are fused with RK stage assignment
-  Array dedt({nx + 1, ny}, dist);
-  Array dudt({nx + 1, ny}, dist);
-  Array dvdt({nx + 1, ny + 1}, dist);
-
   // set initial conditions
   set_field(e, initial_elev, grid, grid.dx / 2, grid.dy / 2, 1);
   dr::mhp::halo(e).exchange_begin();
@@ -337,12 +347,12 @@ int run(
   set_field(v, initial_v, grid, grid.dx / 2, 0.0, 1);
   dr::mhp::halo(v).exchange_begin();
 
+  printArray(h, "Bathymetry");
   printArray(e, "Initial elev");
   printArray(u, "Initial u");
   printArray(v, "Initial v");
 
   auto add = [](auto ops) { return ops.first + ops.second; };
-  auto max = [](double x, double y) { return std::max(x, y); };
   auto rk_update2 = [](auto ops) {
     return 0.75 * std::get<0>(ops) +
            0.25 * (std::get<1>(ops) + std::get<2>(ops));
@@ -365,8 +375,10 @@ int run(
       double elev_max = dr::mhp::reduce(e, static_cast<T>(0), max);
       double u_max = dr::mhp::reduce(u, static_cast<T>(0), max);
 
+      // compute total depth and volume
+      dr::mhp::transform(dr::mhp::views::zip(e, h), H.begin(), add);
       double total_v =
-          (dr::mhp::reduce(e, static_cast<T>(0), std::plus{}) + h) * dx * dy;
+          (dr::mhp::reduce(H, static_cast<T>(0), std::plus{})) * dx * dy;
       if (i == 0) {
         initial_v = total_v;
       }
@@ -392,7 +404,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
+    rhs(u, v, e, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -401,7 +413,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs(u1, v1, e1, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
+    rhs(u1, v1, e1, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -413,7 +425,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs(u2, v2, e2, dudt, dvdt, dedt, g, h, f, dx_inv, dy_inv, dt);
+    rhs(u2, v2, e2, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
