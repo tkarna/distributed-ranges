@@ -35,6 +35,26 @@ constexpr double f = 10.0;
 // Length scale of geostrophic gyre
 constexpr double sigma = 0.4;
 
+void printArray(Array &arr, std::string msg) {
+  std::cout << msg << ":\n";
+  for (auto segment : dr::ranges::segments(arr)) {
+    if (dr::ranges::rank(segment) == std::size_t(comm_rank)) {
+      auto origin = segment.origin();
+      auto s = segment.mdspan();
+      for (std::size_t i = 0; i < s.extent(0); i++) {
+        std::size_t global_i = i + origin[0];
+          std::cout << fmt::format("{0:3d}: ", global_i);
+          for (std::size_t j = 0; j < s.extent(1); j++) {
+            // std::size_t global_j = j + origin[1];
+            std::cout << fmt::format("{0:9.6f}", s(i,j)) << " ";
+          }
+          std::cout << "\n";
+      }
+    }
+  }
+  std::cout << "\n";
+}
+
 // Arakava C grid object
 //
 // T points at cell centers
@@ -148,10 +168,10 @@ void set_field(Array &arr,
 
       for (std::size_t i = 0; i < s.extent(0); i++) {
         std::size_t global_i = i + origin[0];
-        if (global_i > 0) {
+        if (global_i >= row_offset) {
           for (std::size_t j = 0; j < s.extent(1); j++) {
             std::size_t global_j = j + origin[1];
-            T x = grid.xmin + x_offset + (global_i + row_offset) * grid.dx;
+            T x = grid.xmin + x_offset + (global_i - row_offset) * grid.dx;
             T y = grid.ymin + y_offset + global_j * grid.dy;
             s(i, j) = func(x, y, grid.lx, grid.ly);
           }
@@ -187,6 +207,7 @@ void rhs(Array &u, Array &v, Array &e, Array &dudt, Array &dvdt, Array &dedt,
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudt, e_view, v_view, dudt_view);
   }
+  // TODO add kernels to compute boundary dudt boundary values?
 
   dr::mhp::halo(u).exchange_finalize();
   auto rhs_dvdt = [dt, g, f, dy_inv](auto tuple) {
@@ -309,12 +330,16 @@ int run(
   Array dvdt({nx + 1, ny + 1}, dist);
 
   // set initial conditions
-  set_field(e, initial_elev, grid, grid.dx / 2, grid.dy / 2, -1);
+  set_field(e, initial_elev, grid, grid.dx / 2, grid.dy / 2, 1);
   dr::mhp::halo(e).exchange_begin();
   set_field(u, initial_u, grid, 0.0, grid.dy / 2, 0);
   dr::mhp::halo(u).exchange_begin();
-  set_field(v, initial_v, grid, grid.dx / 2, 0.0, -1);
+  set_field(v, initial_v, grid, grid.dx / 2, 0.0, 1);
   dr::mhp::halo(v).exchange_begin();
+
+  printArray(e, "Initial elev");
+  printArray(u, "Initial u");
+  printArray(v, "Initial v");
 
   auto add = [](auto ops) { return ops.first + ops.second; };
   auto max = [](double x, double y) { return std::max(x, y); };
@@ -421,6 +446,8 @@ int run(
     std::cout << "FLOP/s: " << std::setprecision(3) << flop_rate;
     std::cout << " GFLOP/s" << std::endl;
   }
+
+  printArray(e, "Final elev");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
