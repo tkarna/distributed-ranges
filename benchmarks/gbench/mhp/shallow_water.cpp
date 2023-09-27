@@ -41,10 +41,10 @@ void printArray(Array &arr, std::string msg) {
       auto s = segment.mdspan();
       for (std::size_t i = 0; i < s.extent(0); i++) {
         std::size_t global_i = i + origin[0];
-          std::cout << fmt::format("{0:3d}: ", global_i);
+          printf("%3zu: ", global_i);
           for (std::size_t j = 0; j < s.extent(1); j++) {
             // std::size_t global_j = j + origin[1];
-            std::cout << fmt::format("{0:9.6f}", s(i,j)) << " ";
+            printf("%9.6f ", s(i,j));
           }
           std::cout << "\n";
       }
@@ -181,6 +181,7 @@ void set_field(Array &arr,
 }
 
 void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
+         Array &dudy, Array &dvdx,
          Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
@@ -282,6 +283,38 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto dedt_view = dr::mhp::views::submdspan(dedt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_div, hu_view, hv_view, dedt_view);
   }
+
+  auto rhs_dudy = [dy_inv](auto args) {
+    auto [u, out] = args;
+    out(0, 0) = (u(0, 0) - u(0, -1)) * dy_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{0, 1};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dudy.mdspan().extent(0)),
+        static_cast<std::size_t>(dudy.mdspan().extent(1)-1)};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dudy, u_view, dudy_view);
+  }
+  dr::mhp::halo(dudy).exchange_begin();
+  dr::mhp::halo(dudy).exchange_finalize();
+
+  auto rhs_dvdx = [dx_inv](auto args) {
+    auto [v, out] = args;
+    out(0, 0) = (v(1, 0) - v(0, 0)) * dx_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dvdx.mdspan().extent(0)-1),
+        static_cast<std::size_t>(dvdx.mdspan().extent(1))};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dvdx, v_view, dvdx_view);
+  }
+  dr::mhp::halo(dvdx).exchange_begin();
+  dr::mhp::halo(dvdx).exchange_finalize();
 };
 
 int run(
@@ -318,7 +351,7 @@ int run(
     std::cout << std::endl;
   }
 
-  double t_end = 1.0;
+  double t_end = 0.02;
   double t_export = 0.02;
 
   // state variables
@@ -341,6 +374,11 @@ int run(
   dr::mhp::fill(hu, 0.0);
   Array hv({nx + 1, ny + 1}, dist);
   dr::mhp::fill(hu, 0.0);
+
+  Array dudy({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(dudy, 0.0);
+  Array dvdx({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(dvdx, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -446,7 +484,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u, v, e, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -455,7 +493,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs(u1, v1, e1, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u1, v1, e1, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -467,7 +505,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs(u2, v2, e2, hu, hv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u2, v2, e2, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
@@ -502,6 +540,8 @@ int run(
   }
 
   printArray(e, "Final elev");
+  printArray(dudy, "Final dudy");
+  printArray(dvdx, "Final dvdx");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
