@@ -347,6 +347,23 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   }
   dr::mhp::halo(dvdy).exchange_begin();
   dr::mhp::halo(dvdy).exchange_finalize();
+
+  auto rhs_uux = [dt](auto args) {
+    auto [u, dudx, out] = args;
+    auto upwind = u(0, 0) > 0 ? dudx(0, 0) : dudx(1, 0);
+    out(0, 0) = out(0, 0) + dt *(-u(0, 0) * upwind);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dudt.mdspan().extent(0)-1),
+        static_cast<std::size_t>(dudt.mdspan().extent(1))};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
+    auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_uux, u_view, dudx_view, dudt_view);
+  }
+
 };
 
 int run(
@@ -576,8 +593,9 @@ int run(
   }
 
   // printArray(e, "Final elev");
-  printArray(dudx, "Final dudx");
-  printArray(dvdy, "Final dvdy");
+  // printArray(dudx, "Final dudx");
+  // printArray(dvdy, "Final dvdy");
+  printArray(u, "Final u");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
