@@ -266,6 +266,35 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   }
   // TODO add kernels to compute boundary dudt boundary values?
 
+  auto rhs_hu = [](auto args) {
+    auto [u, e, h, out] = args;
+    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(u, 0)-1, shape(u, 1)};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
+  }
+  dr::mhp::halo(hu).exchange_begin();
+
+  auto rhs_hv = [](auto args) {
+    auto [v, e, h, out] = args;
+    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(0, -1) + h(0, -1)) * v(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 1};
+    std::array<std::size_t, 2> end{shape(v, 0), shape(v, 1)-1};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hv_view = dr::mhp::views::submdspan(hv.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hv, v_view, e_view, h_view, hv_view);
+  }
+
   dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, f, dy_inv](auto tuple) {
     auto [e, u, v, dvdx, dvdy, out] = tuple;
@@ -287,38 +316,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, v_view, dvdx_view, dvdy_view, dvdt_view);
   }
 
-  auto rhs_hu = [](auto args) {
-    auto [u, e, h, out] = args;
-    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(u, 0)-1, shape(u, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
-    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
-  }
-  dr::mhp::halo(hu).exchange_begin();
   dr::mhp::halo(hu).exchange_finalize();
-
-  auto rhs_hv = [](auto args) {
-    auto [v, e, h, out] = args;
-    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(0, -1) + h(0, -1)) * v(0, 0);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{shape(v, 0), shape(v, 1)-1};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
-    auto hv_view = dr::mhp::views::submdspan(hv.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_hv, v_view, e_view, h_view, hv_view);
-  }
-  dr::mhp::halo(hv).exchange_begin();
-  dr::mhp::halo(hv).exchange_finalize();
-
   auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
     auto [hu, hv, out] = args;
     auto dhudx = (hu(0, 0) - hu(-1, 0)) * dx_inv;
