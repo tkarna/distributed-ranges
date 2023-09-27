@@ -34,22 +34,26 @@ constexpr double f = 10.0;
 constexpr double sigma = 0.4;
 
 void printArray(Array &arr, std::string msg) {
-  std::cout << msg << ":\n";
-  for (auto segment : dr::ranges::segments(arr)) {
-    if (dr::ranges::rank(segment) == std::size_t(comm_rank)) {
-      auto origin = segment.origin();
-      auto s = segment.mdspan();
-      for (std::size_t i = 0; i < s.extent(0); i++) {
-        std::size_t global_i = i + origin[0];
-          printf("%3zu: ", global_i);
-          for (std::size_t j = 0; j < s.extent(1); j++) {
-            printf("%9.6f ", s(i,j));
-          }
-          std::cout << "\n";
-      }
-      std::cout << "\n" << std::flush;
-    }
-  }
+  // std::cout << msg << ":\n";
+  // for (auto segment : dr::ranges::segments(arr)) {
+  //   if (dr::ranges::rank(segment) == std::size_t(comm_rank)) {
+  //     auto origin = segment.origin();
+  //     auto s = segment.mdspan();
+  //     for (std::size_t i = 0; i < s.extent(0); i++) {
+  //       std::size_t global_i = i + origin[0];
+  //         printf("%3zu: ", global_i);
+  //         for (std::size_t j = 0; j < s.extent(1); j++) {
+  //           printf("%9.6f ", s(i,j));
+  //         }
+  //         std::cout << "\n";
+  //     }
+  //     std::cout << "\n" << std::flush;
+  //   }
+  // }
+}
+
+std::size_t shape(const Array &arr, std::size_t dim) {
+  return arr.mdspan().extent(dim);
 }
 
 // Arakava C grid object
@@ -197,14 +201,9 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(e.mdspan().extent(0) - 1),
-        static_cast<std::size_t>(e.mdspan().extent(1))};
-    std::array<std::size_t, 2> end_v{
-        static_cast<std::size_t>(v.mdspan().extent(0) - 1),
-        static_cast<std::size_t>(v.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(e, 0) - 1, shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end_v);
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudt, e_view, v_view, dudt_view);
   }
@@ -219,14 +218,9 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{0, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(e.mdspan().extent(0)),
-        static_cast<std::size_t>(e.mdspan().extent(1))};
-    std::array<std::size_t, 2> end_u{
-        static_cast<std::size_t>(u.mdspan().extent(0)),
-        static_cast<std::size_t>(u.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(e, 0), shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end_u);
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, dvdt_view);
   }
@@ -237,9 +231,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(u.mdspan().extent(0)-1),
-        static_cast<std::size_t>(u.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(u, 0)-1, shape(u, 1)};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
     auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
@@ -255,9 +247,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(v.mdspan().extent(0)),
-        static_cast<std::size_t>(v.mdspan().extent(1)-1)};
+    std::array<std::size_t, 2> end{shape(v, 0), shape(v, 1)-1};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
     auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
@@ -275,9 +265,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(u.mdspan().extent(0)),
-        static_cast<std::size_t>(u.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(u, 0), shape(u, 1)};
     auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
     auto hv_view = dr::mhp::views::submdspan(hv.view(), start, end);
     auto dedt_view = dr::mhp::views::submdspan(dedt.view(), start, end);
@@ -290,9 +278,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{0, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudy.mdspan().extent(0)),
-        static_cast<std::size_t>(dudy.mdspan().extent(1)-1)};
+    std::array<std::size_t, 2> end{shape(dudy, 0), shape(dudy, 1)-1};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudy, u_view, dudy_view);
@@ -306,9 +292,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dvdx.mdspan().extent(0)-1),
-        static_cast<std::size_t>(dvdx.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(dvdx, 0)-1, shape(dvdx, 1)};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dvdx, v_view, dvdx_view);
@@ -322,9 +306,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudx.mdspan().extent(0)),
-        static_cast<std::size_t>(dudx.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(dudx, 0), shape(dudx, 1)};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudx, u_view, dudx_view);
@@ -338,9 +320,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dvdy.mdspan().extent(0)),
-        static_cast<std::size_t>(dvdy.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(dvdy, 0), shape(dvdy, 1)};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dvdy, v_view, dvdy_view);
@@ -355,9 +335,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudt.mdspan().extent(0)-1),
-        static_cast<std::size_t>(dudt.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(dudt, 0)-1, shape(dudt, 1)};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
@@ -372,9 +350,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudt.mdspan().extent(0)-1),
-        static_cast<std::size_t>(dudt.mdspan().extent(1))};
+    std::array<std::size_t, 2> end{shape(dudt, 0)-1, shape(dudt, 1)};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
@@ -388,9 +364,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dvdt.mdspan().extent(0)),
-        static_cast<std::size_t>(dvdt.mdspan().extent(1)-1)};
+    std::array<std::size_t, 2> end{shape(dvdt, 0), shape(dvdt, 1)-1};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
@@ -405,9 +379,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   };
   {
     std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dvdt.mdspan().extent(0)),
-        static_cast<std::size_t>(dvdt.mdspan().extent(1)-1)};
+    std::array<std::size_t, 2> end{shape(dvdt, 0), shape(dvdt, 1)-1};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
