@@ -364,6 +364,23 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(rhs_uux, u_view, dudx_view, dudt_view);
   }
 
+  auto rhs_vuy = [dt](auto args) {
+    auto [v, dudy, out] = args;
+    auto v_at_u = 0.25 * (v(0, 0) + v(1, 0) + v(0, 1) + v(1, 1));
+    auto upwind = v_at_u > 0 ? dudy(0, 0) : dudy(0, 1);
+    out(0, 0) = out(0, 0) + dt *(-v_at_u * upwind);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dudt.mdspan().extent(0)-1),
+        static_cast<std::size_t>(dudt.mdspan().extent(1))};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
+    auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_vuy, v_view, dudy_view, dudt_view);
+  }
+
   auto rhs_vvy = [dt](auto args) {
     auto [v, dvdy, out] = args;
     auto upwind = v(0, 0) > 0 ? dvdy(0, 0) : dvdy(0, 1);
