@@ -191,38 +191,100 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   /**
    * Evaluate right hand side of the equations
    */
-  dr::mhp::halo(e).exchange_finalize();
+  auto rhs_dudy = [dy_inv](auto args) {
+    auto [u, out] = args;
+    out(0, 0) = (u(0, 0) - u(0, -1)) * dy_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{0, 1};
+    std::array<std::size_t, 2> end{shape(dudy, 0), shape(dudy, 1)-1};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dudy, u_view, dudy_view);
+  }
+
+  auto rhs_dvdy = [dy_inv](auto args) {
+    auto [v, out] = args;
+    out(0, 0) = (v(0, 0) - v(0, -1)) * dy_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 1};
+    std::array<std::size_t, 2> end{shape(dvdy, 0), shape(dvdy, 1)};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dvdy, v_view, dvdy_view);
+  }
+
+  dr::mhp::halo(u).exchange_finalize();
+  auto rhs_dudx = [dx_inv](auto args) {
+    auto [u, out] = args;
+    out(0, 0) = (u(0, 0) - u(-1, 0)) * dx_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(dudx, 0), shape(dudx, 1)};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dudx, u_view, dudx_view);
+  }
+  dr::mhp::halo(dudx).exchange_begin();
+
   dr::mhp::halo(v).exchange_finalize();
+  auto rhs_dvdx = [dx_inv](auto args) {
+    auto [v, out] = args;
+    out(0, 0) = (v(1, 0) - v(0, 0)) * dx_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(dvdx, 0)-1, shape(dvdx, 1)};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dvdx, v_view, dvdx_view);
+  }
+  dr::mhp::halo(dvdx).exchange_begin();
+
+  dr::mhp::halo(e).exchange_finalize();
+  dr::mhp::halo(dudx).exchange_finalize();
   auto rhs_dudt = [dt, g, f, dx_inv](auto tuple) {
-    auto [e, v, out] = tuple;
+    auto [e, u, v, dudx, dudy, out] = tuple;
     auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
     auto v_at_u = 0.25 * (v(0, 0) + v(1, 0) + v(0, 1) + v(1, 1));
-    out(0, 0) = dt * (-g * dedx + f * v_at_u);
+    auto dudx_up = u(0, 0) > 0 ? dudx(0, 0) : dudx(1, 0);
+    auto dudy_up = v_at_u > 0 ? dudy(0, 0) : dudy(0, 1);
+    out(0, 0) = dt * (-g * dedx + f * v_at_u - u(0, 0) * dudx_up - v_at_u * dudy_up);
   };
   {
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{shape(e, 0) - 1, shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
+    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudt, e_view, v_view, dudt_view);
+    dr::mhp::stencil_for_each(rhs_dudt, e_view, u_view, v_view, dudx_view, dudy_view, dudt_view);
   }
   // TODO add kernels to compute boundary dudt boundary values?
 
-  dr::mhp::halo(u).exchange_finalize();
+  dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, f, dy_inv](auto tuple) {
-    auto [e, u, out] = tuple;
+    auto [e, u, v, dvdx, dvdy, out] = tuple;
     auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
     auto u_at_v = 0.25 * (u(0, 0) + u(0, -1) + u(-1, 0) + u(-1, -1));
-    out(0, 0) = dt * (-g * dedy - f * u_at_v);
+    auto dvdx_up = u_at_v > 0 ? dvdx(-1, 0) : dvdx(0, 0);
+    auto dvdy_up = v(0, 0) > 0 ? dvdy(0, 0) : dvdy(0, 1);
+    out(0, 0) = dt * (-g * dedy - f * u_at_v - u_at_v * dvdx_up - v(0, 0) * dvdy_up);
   };
   {
     std::array<std::size_t, 2> start{0, 1};
     std::array<std::size_t, 2> end{shape(e, 0), shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
+    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, dvdt_view);
+    dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, v_view, dvdx_view, dvdy_view, dvdt_view);
   }
 
   auto rhs_hu = [](auto args) {
@@ -271,121 +333,6 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto dedt_view = dr::mhp::views::submdspan(dedt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_div, hu_view, hv_view, dedt_view);
   }
-
-  auto rhs_dudy = [dy_inv](auto args) {
-    auto [u, out] = args;
-    out(0, 0) = (u(0, 0) - u(0, -1)) * dy_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{0, 1};
-    std::array<std::size_t, 2> end{shape(dudy, 0), shape(dudy, 1)-1};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudy, u_view, dudy_view);
-  }
-  dr::mhp::halo(dudy).exchange_begin();
-  dr::mhp::halo(dudy).exchange_finalize();
-
-  auto rhs_dvdx = [dx_inv](auto args) {
-    auto [v, out] = args;
-    out(0, 0) = (v(1, 0) - v(0, 0)) * dx_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(dvdx, 0)-1, shape(dvdx, 1)};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdx, v_view, dvdx_view);
-  }
-  dr::mhp::halo(dvdx).exchange_begin();
-  dr::mhp::halo(dvdx).exchange_finalize();
-
-  auto rhs_dudx = [dx_inv](auto args) {
-    auto [u, out] = args;
-    out(0, 0) = (u(0, 0) - u(-1, 0)) * dx_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(dudx, 0), shape(dudx, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudx, u_view, dudx_view);
-  }
-  dr::mhp::halo(dudx).exchange_begin();
-  dr::mhp::halo(dudx).exchange_finalize();
-
-  auto rhs_dvdy = [dy_inv](auto args) {
-    auto [v, out] = args;
-    out(0, 0) = (v(0, 0) - v(0, -1)) * dy_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{shape(dvdy, 0), shape(dvdy, 1)};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdy, v_view, dvdy_view);
-  }
-  dr::mhp::halo(dvdy).exchange_begin();
-  dr::mhp::halo(dvdy).exchange_finalize();
-
-  auto rhs_uux = [dt](auto args) {
-    auto [u, dudx, out] = args;
-    auto upwind = u(0, 0) > 0 ? dudx(0, 0) : dudx(1, 0);
-    out(0, 0) = out(0, 0) + dt *(-u(0, 0) * upwind);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(dudt, 0)-1, shape(dudt, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
-    auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_uux, u_view, dudx_view, dudt_view);
-  }
-
-  auto rhs_vuy = [dt](auto args) {
-    auto [v, dudy, out] = args;
-    auto v_at_u = 0.25 * (v(0, 0) + v(1, 0) + v(0, 1) + v(1, 1));
-    auto upwind = v_at_u > 0 ? dudy(0, 0) : dudy(0, 1);
-    out(0, 0) = out(0, 0) + dt *(-v_at_u * upwind);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(dudt, 0)-1, shape(dudt, 1)};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
-    auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_vuy, v_view, dudy_view, dudt_view);
-  }
-
-  auto rhs_vvy = [dt](auto args) {
-    auto [v, dvdy, out] = args;
-    auto upwind = v(0, 0) > 0 ? dvdy(0, 0) : dvdy(0, 1);
-    out(0, 0) = out(0, 0) + dt *(-v(0, 0) * upwind);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{shape(dvdt, 0), shape(dvdt, 1)-1};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
-    auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_vvy, v_view, dvdy_view, dvdt_view);
-  }
-
-  auto rhs_uvx = [dt](auto args) {
-    auto [u, dvdx, out] = args;
-    auto u_at_v = 0.25 * (u(0, 0) + u(0, -1) + u(-1, 0) + u(-1, -1));
-    auto upwind = u_at_v > 0 ? dvdx(-1, 0) : dvdx(0, 0);
-    out(0, 0) = out(0, 0) + dt *(-u_at_v * upwind);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{shape(dvdt, 0), shape(dvdt, 1)-1};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
-    auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_uvx, u_view, dvdx_view, dvdt_view);
-  }
-
 };
 
 int run(
