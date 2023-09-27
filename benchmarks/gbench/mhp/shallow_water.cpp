@@ -389,8 +389,8 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   {
     std::array<std::size_t, 2> start{1, 1};
     std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudt.mdspan().extent(0)),
-        static_cast<std::size_t>(dudt.mdspan().extent(1)-1)};
+        static_cast<std::size_t>(dvdt.mdspan().extent(0)),
+        static_cast<std::size_t>(dvdt.mdspan().extent(1)-1)};
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
@@ -406,8 +406,8 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   {
     std::array<std::size_t, 2> start{1, 1};
     std::array<std::size_t, 2> end{
-        static_cast<std::size_t>(dudt.mdspan().extent(0)),
-        static_cast<std::size_t>(dudt.mdspan().extent(1)-1)};
+        static_cast<std::size_t>(dvdt.mdspan().extent(0)),
+        static_cast<std::size_t>(dvdt.mdspan().extent(1)-1)};
     auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
@@ -450,7 +450,7 @@ int run(
     std::cout << std::endl;
   }
 
-  double t_end = 0.02;
+  double t_end = 1.0;
   double t_export = 0.02;
 
   // state variables
@@ -646,6 +646,7 @@ int run(
   // printArray(dudx, "Final dudx");
   // printArray(dvdy, "Final dvdy");
   printArray(u, "Final u");
+  printArray(v, "Final v");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
