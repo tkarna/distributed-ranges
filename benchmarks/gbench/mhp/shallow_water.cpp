@@ -43,14 +43,13 @@ void printArray(Array &arr, std::string msg) {
         std::size_t global_i = i + origin[0];
           printf("%3zu: ", global_i);
           for (std::size_t j = 0; j < s.extent(1); j++) {
-            // std::size_t global_j = j + origin[1];
             printf("%9.6f ", s(i,j));
           }
           std::cout << "\n";
       }
+      std::cout << "\n" << std::flush;
     }
   }
-  std::cout << "\n";
 }
 
 // Arakava C grid object
@@ -182,6 +181,7 @@ void set_field(Array &arr,
 
 void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudy, Array &dvdx,
+         Array &dudx, Array &dvdy,
          Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
@@ -315,6 +315,38 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   }
   dr::mhp::halo(dvdx).exchange_begin();
   dr::mhp::halo(dvdx).exchange_finalize();
+
+  auto rhs_dudx = [dx_inv](auto args) {
+    auto [u, out] = args;
+    out(0, 0) = (u(0, 0) - u(-1, 0)) * dx_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dudx.mdspan().extent(0)),
+        static_cast<std::size_t>(dudx.mdspan().extent(1))};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dudx, u_view, dudx_view);
+  }
+  dr::mhp::halo(dudx).exchange_begin();
+  dr::mhp::halo(dudx).exchange_finalize();
+
+  auto rhs_dvdy = [dy_inv](auto args) {
+    auto [v, out] = args;
+    out(0, 0) = (v(0, 0) - v(0, -1)) * dy_inv;
+  };
+  {
+    std::array<std::size_t, 2> start{1, 1};
+    std::array<std::size_t, 2> end{
+        static_cast<std::size_t>(dvdy.mdspan().extent(0)),
+        static_cast<std::size_t>(dvdy.mdspan().extent(1))};
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_dvdy, v_view, dvdy_view);
+  }
+  dr::mhp::halo(dvdy).exchange_begin();
+  dr::mhp::halo(dvdy).exchange_finalize();
 };
 
 int run(
@@ -379,6 +411,10 @@ int run(
   dr::mhp::fill(dudy, 0.0);
   Array dvdx({nx + 1, ny + 1}, dist);
   dr::mhp::fill(dvdx, 0.0);
+  Array dudx({nx + 1, ny}, dist);
+  dr::mhp::fill(dudx, 0.0);
+  Array dvdy({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(dvdy, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -427,10 +463,10 @@ int run(
   set_field(v, initial_v, grid, grid.dx / 2, 0.0, 1);
   dr::mhp::halo(v).exchange_begin();
 
-  printArray(h, "Bathymetry");
-  printArray(e, "Initial elev");
-  printArray(u, "Initial u");
-  printArray(v, "Initial v");
+  // printArray(h, "Bathymetry");
+  // printArray(e, "Initial elev");
+  // printArray(u, "Initial u");
+  // printArray(v, "Initial v");
 
   auto add = [](auto ops) { return ops.first + ops.second; };
   auto rk_update2 = [](auto ops) {
@@ -484,7 +520,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs(u, v, e, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -493,7 +529,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs(u1, v1, e1, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -505,7 +541,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs(u2, v2, e2, hu, hv, dudy, dvdx, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
@@ -539,9 +575,9 @@ int run(
     std::cout << " GFLOP/s" << std::endl;
   }
 
-  printArray(e, "Final elev");
-  printArray(dudy, "Final dudy");
-  printArray(dvdx, "Final dvdx");
+  // printArray(e, "Final elev");
+  printArray(dudx, "Final dudx");
+  printArray(dvdy, "Final dvdy");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
