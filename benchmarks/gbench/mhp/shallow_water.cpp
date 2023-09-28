@@ -337,6 +337,7 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudy, Array &dvdx,
          Array &dudx, Array &dvdy,
          Array &H_at_f, Array &q, Array &ke,
+         Array &qa, Array &qb, Array &qg, Array &qd,
          Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
@@ -505,6 +506,8 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto q_view = dr::mhp::views::submdspan(q.view(), start, end);
     dr::mhp::stencil_for_each(kernel, dudy_view, dvdx_view, Hf_view, q_view);
   }
+  dr::mhp::halo(q).exchange_begin();
+  dr::mhp::halo(q).exchange_finalize();
 
   // kinetic energy
   dr::mhp::halo(u).exchange_finalize();
@@ -521,6 +524,20 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
     dr::mhp::stencil_for_each(kernel, u_view, v_view, ke_view);
+  }
+
+  // q advection
+  {
+    auto kernel = [](auto tuple) {
+      auto [q, qa] = tuple;
+      auto w = 1./12.;
+      qa(0, 0) = w * (q(-1, 1) + q(-1, 0) + q(0, 1));
+    };
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(q, 0), shape(q, 1)};
+    auto q_view = dr::mhp::views::submdspan(q.view(), start, end);
+    auto qa_view = dr::mhp::views::submdspan(qa.view(), start, end);
+    dr::mhp::stencil_for_each(kernel, q_view, qa_view);
   }
 
   auto rhs_dvdy = [dy_inv](auto args) {
@@ -715,6 +732,15 @@ int run(
   // kinetic energy
   Array ke({nx + 1, ny}, dist);
   dr::mhp::fill(ke, 0.0);
+  // q advection
+  Array qa({nx + 1, ny}, dist);
+  dr::mhp::fill(qa, 0.0);
+  Array qb({nx + 1, ny}, dist);
+  dr::mhp::fill(qb, 0.0);
+  Array qg({nx + 1, ny}, dist);
+  dr::mhp::fill(qg, 0.0);
+  Array qd({nx + 1, ny}, dist);
+  dr::mhp::fill(qd, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -820,7 +846,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -829,7 +855,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -841,7 +867,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
@@ -878,7 +904,7 @@ int run(
   // printArray(e, "Final elev");
   // printArray(H_at_f, "Final H_at_f");
   // printArray(q, "Final q");
-  printArray(ke, "Final ke");
+  printArray(qa, "Final qa");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
