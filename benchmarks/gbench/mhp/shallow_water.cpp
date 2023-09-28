@@ -529,17 +529,19 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   // q advection
   {
     auto kernel = [](auto tuple) {
-      auto [q, qa, qb] = tuple;
+      auto [q, qa, qb, qg] = tuple;
       auto w = 1./12.;
       qa(0, 0) = w * (q(-1, 1) + q(-1, 0) + q(0, 1));
       qb(0, 0) = w * (q(-1, 1) + q(0, 0) + q(0, 1));
+      qg(0, 0) = w * (q(-1, 0) + q(0, 0) + q(0, 1));
     };
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{shape(q, 0), shape(q, 1)};
     auto q_view = dr::mhp::views::submdspan(q.view(), start, end);
     auto qa_view = dr::mhp::views::submdspan(qa.view(), start, end);
     auto qb_view = dr::mhp::views::submdspan(qb.view(), start, end);
-    dr::mhp::stencil_for_each(kernel, q_view, qa_view, qb_view);
+    auto qg_view = dr::mhp::views::submdspan(qg.view(), start, end);
+    dr::mhp::stencil_for_each(kernel, q_view, qa_view, qb_view, qg_view);
   }
 
   auto rhs_dvdy = [dy_inv](auto args) {
@@ -906,7 +908,7 @@ int run(
   // printArray(e, "Final elev");
   // printArray(H_at_f, "Final H_at_f");
   // printArray(q, "Final q");
-  printArray(qb, "Final qb");
+  printArray(qg, "Final qg");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
