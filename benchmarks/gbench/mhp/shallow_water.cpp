@@ -731,7 +731,7 @@ int run(
     std::cout << std::endl;
   }
 
-  double t_end = 0.02;
+  double t_end = 1.0;
   double t_export = 0.02;
 
   // state variables
@@ -946,7 +946,7 @@ int run(
   }
 
   // printArray(e, "Final elev");
-  printArray(u, "Final u");
+  // printArray(u, "Final u");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
