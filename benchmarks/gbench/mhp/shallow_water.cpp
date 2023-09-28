@@ -338,7 +338,7 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudx, Array &dvdy,
          Array &H_at_f, Array &q, Array &ke,
          Array &qa, Array &qb, Array &qg, Array &qd,
-         Array &qhv,
+         Array &qhv, Array &qhu,
          Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
@@ -589,6 +589,40 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(kernel, hv_view, qa_view, qb_view, qg_view, qd_view, qhv_view);
   }
 
+  auto rhs_hu = [](auto args) {
+    auto [u, e, h, out] = args;
+    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(u, 0)-1, shape(u, 1)};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
+  }
+  dr::mhp::halo(hu).exchange_begin();
+  dr::mhp::halo(hu).exchange_finalize();
+
+  // qhu
+  {
+    auto kernel = [](auto tuple) {
+      auto [hu, qa, qb, qg, qd, out] = tuple;
+      out(0, 0) = qg(0, 0) * hu(0, 0) + qd(0, 0) * hu(-1, 0) +
+                  qa(0, -1) * hu(-1, -1) + qb(0, -1) * hu(0, -1);
+    };
+    std::array<std::size_t, 2> start{1, 1};
+    std::array<std::size_t, 2> end{shape(qhu, 0), shape(qhu, 1)-1};
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    auto qa_view = dr::mhp::views::submdspan(qa.view(), start, end);
+    auto qb_view = dr::mhp::views::submdspan(qb.view(), start, end);
+    auto qg_view = dr::mhp::views::submdspan(qg.view(), start, end);
+    auto qd_view = dr::mhp::views::submdspan(qd.view(), start, end);
+    auto qhu_view = dr::mhp::views::submdspan(qhu.view(), start, end);
+    dr::mhp::stencil_for_each(kernel, hu_view, qa_view, qb_view, qg_view, qd_view, qhu_view);
+  }
+
   auto rhs_dvdy = [dy_inv](auto args) {
     auto [v, out] = args;
     out(0, 0) = (v(0, 0) - v(0, -1)) * dy_inv;
@@ -637,21 +671,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   }
   // TODO add kernels to compute boundary dudt boundary values?
 
-  auto rhs_hu = [](auto args) {
-    auto [u, e, h, out] = args;
-    out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(u, 0)-1, shape(u, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
-    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
-  }
-  dr::mhp::halo(hu).exchange_begin();
-
   dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, dy_inv](auto tuple) {
     auto [e, out] = tuple;
@@ -674,7 +693,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(rhs_dvdt, e_view, dvdt_view);
   }
 
-  dr::mhp::halo(hu).exchange_finalize();
   auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
     auto [hu, hv, out] = args;
     auto dhudx = (hu(0, 0) - hu(-1, 0)) * dx_inv;
@@ -779,6 +797,8 @@ int run(
 
   Array qhv({nx + 1, ny}, dist);
   dr::mhp::fill(qhv, 0.0);
+  Array qhu({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(qhu, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -884,7 +904,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -893,7 +913,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -905,7 +925,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
@@ -942,7 +962,7 @@ int run(
   // printArray(e, "Final elev");
   // printArray(H_at_f, "Final H_at_f");
   // printArray(q, "Final q");
-  printArray(qhv, "Final qhv");
+  printArray(qhu, "Final qhu");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
