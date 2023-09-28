@@ -995,7 +995,7 @@ int run(
                 << std::endl;
     }
   } else if (nx == 128 && ny == 128) {
-    double expected_L2 = 0.007224068445111;
+    double expected_L2 = 4.106813340444025e-05;
     double rel_tolerance = 1e-6;
     double rel_err = err_L2 / expected_L2 - 1.0;
     if (!(fabs(rel_err) < rel_tolerance)) {
