@@ -526,6 +526,8 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
     dr::mhp::stencil_for_each(kernel, u_view, v_view, ke_view);
   }
+  dr::mhp::halo(ke).exchange_begin();
+  dr::mhp::halo(ke).exchange_finalize();
 
   // q advection
   {
@@ -650,47 +652,51 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
 
   dr::mhp::halo(dudx).exchange_finalize();
   auto rhs_dudt = [dt, g, dx_inv](auto tuple) {
-    auto [e, out] = tuple;
+    auto [e, ke, out] = tuple;
     auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
+    auto dkedx = (ke(1, 0) - ke(0, 0)) * dx_inv;
     // auto v_at_u = 0.25 * (v(0, 0) + v(1, 0) + v(0, 1) + v(1, 1));
     // auto dudx_up = u(0, 0) > 0 ? dudx(0, 0) : dudx(1, 0);
     // auto dudy_up = v_at_u > 0 ? dudy(0, 0) : dudy(0, 1);
     // out(0, 0) = dt * (-g * dedx + f * v_at_u - u(0, 0) * dudx_up - v_at_u * dudy_up);
-    out(0, 0) = dt * (-g * dedx);
+    out(0, 0) = dt * (-g * dedx - dkedx);
   };
   {
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{shape(e, 0) - 1, shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
     // auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     // auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     // auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
     // auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudt, e_view, dudt_view);
+    dr::mhp::stencil_for_each(rhs_dudt, e_view, ke_view, dudt_view);
   }
   // TODO add kernels to compute boundary dudt boundary values?
 
   dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, dy_inv](auto tuple) {
-    auto [e, out] = tuple;
+    auto [e, ke, out] = tuple;
     auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
+    auto dkedy = (ke(0, 0) - ke(0, -1)) * dy_inv;
     // auto u_at_v = 0.25 * (u(0, 0) + u(0, -1) + u(-1, 0) + u(-1, -1));
     // auto dvdx_up = u_at_v > 0 ? dvdx(-1, 0) : dvdx(0, 0);
     // auto dvdy_up = v(0, 0) > 0 ? dvdy(0, 0) : dvdy(0, 1);
     // out(0, 0) = dt * (-g * dedy - f * u_at_v - u_at_v * dvdx_up - v(0, 0) * dvdy_up);
-    out(0, 0) = dt * (-g * dedy);
+    out(0, 0) = dt * (-g * dedy - dkedy);
   };
   {
     std::array<std::size_t, 2> start{0, 1};
     std::array<std::size_t, 2> end{shape(e, 0), shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
     // auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
     // auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     // auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
     // auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdt, e_view, dvdt_view);
+    dr::mhp::stencil_for_each(rhs_dvdt, e_view, ke_view, dvdt_view);
   }
 
   auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
@@ -960,9 +966,7 @@ int run(
   }
 
   // printArray(e, "Final elev");
-  // printArray(H_at_f, "Final H_at_f");
-  // printArray(q, "Final q");
-  printArray(qhu, "Final qhu");
+  printArray(u, "Final u");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
