@@ -336,7 +336,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
 void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudy, Array &dvdx,
          Array &dudx, Array &dvdy,
-         Array &H_at_f,
+         Array &H_at_f, Array &q,
          Array &dudt, Array &dvdt, Array &dedt,
          Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
   /**
@@ -462,6 +462,21 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
     auto Hf_view = dr::mhp::views::submdspan(H_at_f.view(), start, end);
     dr::mhp::stencil_for_each(rhs_Hf, e_view, h_view, Hf_view);
+  }
+
+  // vorticity
+  {
+    auto kernel = [f](auto tuple) {
+      auto [dudy, dvdx, H_at_f, out] = tuple;
+      out(0, 0) = (f - dudy(0, 0) + dvdx(0, 0))/ H_at_f(0, 0);
+    };
+    std::array<std::size_t, 2> start{0, 0};
+    std::array<std::size_t, 2> end{shape(q, 0), shape(q, 1)};
+    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
+    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
+    auto Hf_view = dr::mhp::views::submdspan(H_at_f.view(), start, end);
+    auto q_view = dr::mhp::views::submdspan(q.view(), start, end);
+    dr::mhp::stencil_for_each(kernel, dudy_view, dvdx_view, Hf_view, q_view);
   }
 
   auto rhs_dudy = [dy_inv](auto args) {
@@ -677,6 +692,9 @@ int run(
   // total depth at F points
   Array H_at_f({nx + 1, ny + 1}, dist);
   dr::mhp::fill(H_at_f, 0.0);
+  // potential vorticity
+  Array q({nx + 1, ny + 1}, dist);
+  dr::mhp::fill(q, 0.0);
 
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
@@ -782,7 +800,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -791,7 +809,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -801,9 +819,9 @@ int run(
     dr::mhp::transform(dr::mhp::views::zip(e, e1, dedt), e2.begin(),
                         rk_update2);
     dr::mhp::halo(e2).exchange_begin();
-
+    
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
@@ -839,6 +857,7 @@ int run(
 
   // printArray(e, "Final elev");
   printArray(H_at_f, "Final H_at_f");
+  printArray(q, "Final q");
 
   // Compute error against exact solution
   Array e_exact({nx + 1, ny}, dist);
