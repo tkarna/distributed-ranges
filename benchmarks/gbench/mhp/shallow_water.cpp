@@ -333,20 +333,9 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   }
 };
 
-void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
-         Array &dudy, Array &dvdx,
-         Array &dudx, Array &dvdy,
-         Array &H_at_f, Array &q,
-         Array &qa, Array &qb, Array &qg, Array &qd,
-         Array &qhv, Array &qhu,
-         Array &dudt, Array &dvdt, Array &dedt,
-         Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
-  /**
-   * Evaluate right hand side of the equations, vector invariant form
-   */
-
-  dr::mhp::halo(e).exchange_finalize();
-  // H_at_f: average over 4 adjacent T points
+// Compute total depth at vertices F points
+void compute_total_depth(Array &e, Array &h, Array &H_at_f) {
+  // H_at_f: average over 4 adjacent T points, if present
   {  // interior part
     auto rhs_Hf = [](auto tuple) {
       auto [e, h, out] = tuple;
@@ -465,6 +454,22 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto Hf_view = dr::mhp::views::submdspan(H_at_f.view(), start, end);
     dr::mhp::stencil_for_each(rhs_Hf, e_view, h_view, Hf_view);
   }
+}
+
+void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
+         Array &dudy, Array &dvdx,
+         Array &dudx, Array &dvdy,
+         Array &H_at_f, Array &q,
+         Array &qa, Array &qb, Array &qg, Array &qd,
+         Array &qhv, Array &qhu,
+         Array &dudt, Array &dvdt, Array &dedt,
+         Array &h, double g, double f, double dx_inv, double dy_inv, double dt) {
+  /**
+   * Evaluate right hand side of the equations, vector invariant form
+   */
+
+  dr::mhp::halo(e).exchange_finalize();
+  compute_total_depth(e, h, H_at_f);
 
   auto rhs_dudy = [dy_inv](auto args) {
     auto [u, out] = args;
