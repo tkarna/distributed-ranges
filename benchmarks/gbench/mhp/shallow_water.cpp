@@ -458,7 +458,6 @@ void compute_total_depth(Array &e, Array &h, Array &H_at_f) {
 
 void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudy, Array &dvdx,
-         Array &dudx, Array &dvdy,
          Array &H_at_f, Array &q,
          Array &qa, Array &qb, Array &qg, Array &qd,
          Array &qhv, Array &qhu,
@@ -612,32 +611,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(kernel, hu_view, qa_view, qb_view, qg_view, qd_view, qhu_view);
   }
 
-  auto rhs_dvdy = [dy_inv](auto args) {
-    auto [v, out] = args;
-    out(0, 0) = (v(0, 0) - v(0, -1)) * dy_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{1, 1};
-    std::array<std::size_t, 2> end{shape(dvdy, 0), shape(dvdy, 1)};
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto dvdy_view = dr::mhp::views::submdspan(dvdy.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdy, v_view, dvdy_view);
-  }
-
-  auto rhs_dudx = [dx_inv](auto args) {
-    auto [u, out] = args;
-    out(0, 0) = (u(0, 0) - u(-1, 0)) * dx_inv;
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(dudx, 0), shape(dudx, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto dudx_view = dr::mhp::views::submdspan(dudx.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudx, u_view, dudx_view);
-  }
-  dr::mhp::halo(dudx).exchange_begin();
-
-  dr::mhp::halo(dudx).exchange_finalize();
   auto rhs_dudt = [dt, g, dx_inv](auto tuple) {
     auto [e, u, v, qhv, out] = tuple;
     auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
@@ -660,7 +633,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudt, e_view, u_view, v_view, qhv_view, dudt_view);
   }
-  // TODO add kernels to compute boundary dudt boundary values?
 
   dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, dy_inv](auto tuple) {
@@ -895,7 +867,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -904,7 +876,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -916,7 +888,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
