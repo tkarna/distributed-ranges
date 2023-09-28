@@ -336,7 +336,7 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv,
 void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
          Array &dudy, Array &dvdx,
          Array &dudx, Array &dvdy,
-         Array &H_at_f, Array &q, Array &ke,
+         Array &H_at_f, Array &q,
          Array &qa, Array &qb, Array &qg, Array &qd,
          Array &qhv, Array &qhu,
          Array &dudt, Array &dvdt, Array &dedt,
@@ -510,25 +510,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
   dr::mhp::halo(q).exchange_begin();
   dr::mhp::halo(q).exchange_finalize();
 
-  // kinetic energy
-  dr::mhp::halo(u).exchange_finalize();
-  {
-    auto kernel = [](auto tuple) {
-      auto [u, v, out] = tuple;
-      auto u2_at_t = 0.5 *(u(-1, 0)*u(-1, 0) + u(0, 0)*u(0, 0));
-      auto v2_at_t = 0.5 *(v(0, 0)*v(0, 0) + v(0, 1)*v(0, 1));
-      out(0, 0) = 0.5 * (u2_at_t + v2_at_t);
-    };
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(ke, 0), shape(ke, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
-    auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
-    dr::mhp::stencil_for_each(kernel, u_view, v_view, ke_view);
-  }
-  dr::mhp::halo(ke).exchange_begin();
-  dr::mhp::halo(ke).exchange_finalize();
-
   // q advection
   {
     auto kernel = [](auto tuple) {
@@ -591,6 +572,7 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
     dr::mhp::stencil_for_each(kernel, hv_view, qa_view, qb_view, qg_view, qd_view, qhv_view);
   }
 
+  dr::mhp::halo(u).exchange_finalize();
   auto rhs_hu = [](auto args) {
     auto [u, e, h, out] = args;
     out(0, 0) = 0.5*(e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
@@ -652,37 +634,51 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv,
 
   dr::mhp::halo(dudx).exchange_finalize();
   auto rhs_dudt = [dt, g, dx_inv](auto tuple) {
-    auto [e, ke, qhv, out] = tuple;
+    auto [e, u, v, qhv, out] = tuple;
     auto dedx = (e(1, 0) - e(0, 0)) * dx_inv;
-    auto dkedx = (ke(1, 0) - ke(0, 0)) * dx_inv;
+    auto u2t_hi = 0.5 *(u(0, 0)*u(0, 0) + u(1, 0)*u(1, 0));
+    auto v2t_hi = 0.5 *(v(1, 0)*v(1, 0) + v(1, 1)*v(1, 1));
+    auto ke_hi = 0.5 * (u2t_hi + v2t_hi);
+    auto u2t_lo = 0.5 *(u(-1, 0)*u(-1, 0) + u(0, 0)*u(0, 0));
+    auto v2t_lo = 0.5 *(v(0, 0)*v(0, 0) + v(0, 1)*v(0, 1));
+    auto ke_lo = 0.5 * (u2t_lo + v2t_lo);
+    auto dkedx = (ke_hi - ke_lo) * dx_inv;
     out(0, 0) = dt * (-g * dedx - dkedx + qhv(0, 0));
   };
   {
     std::array<std::size_t, 2> start{1, 0};
     std::array<std::size_t, 2> end{shape(e, 0) - 1, shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto qhv_view = dr::mhp::views::submdspan(qhv.view(), start, end);
     auto dudt_view = dr::mhp::views::submdspan(dudt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dudt, e_view, ke_view, qhv_view, dudt_view);
+    dr::mhp::stencil_for_each(rhs_dudt, e_view, u_view, v_view, qhv_view, dudt_view);
   }
   // TODO add kernels to compute boundary dudt boundary values?
 
   dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, dy_inv](auto tuple) {
-    auto [e, ke, qhu, out] = tuple;
+    auto [e, u, v, qhu, out] = tuple;
     auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
-    auto dkedy = (ke(0, 0) - ke(0, -1)) * dy_inv;
+    auto u2t_hi = 0.5 *(u(-1, 0)*u(-1, 0) + u(0, 0)*u(0, 0));
+    auto v2t_hi = 0.5 *(v(0, 0)*v(0, 0) + v(0, 1)*v(0, 1));
+    auto ke_hi = 0.5 * (u2t_hi + v2t_hi);
+    auto u2t_lo = 0.5 *(u(-1, -1)*u(-1, -1) + u(0, -1)*u(0, -1));
+    auto v2t_lo = 0.5 *(v(0, -1)*v(0, -1) + v(0, 0)*v(0, 0));
+    auto ke_lo = 0.5 * (u2t_lo + v2t_lo);
+    auto dkedy = (ke_hi - ke_lo) * dy_inv;
     out(0, 0) = dt * (-g * dedy - dkedy - qhu(0, 0));
   };
   {
-    std::array<std::size_t, 2> start{0, 1};
+    std::array<std::size_t, 2> start{1, 1};
     std::array<std::size_t, 2> end{shape(e, 0), shape(e, 1)};
     auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
     auto qhu_view = dr::mhp::views::submdspan(qhu.view(), start, end);
     auto dvdt_view = dr::mhp::views::submdspan(dvdt.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_dvdt, e_view, ke_view, qhu_view, dvdt_view);
+    dr::mhp::stencil_for_each(rhs_dvdt, e_view, u_view, v_view, qhu_view, dvdt_view);
   }
 
   auto rhs_div = [dt, dx_inv, dy_inv](auto args) {
@@ -774,9 +770,7 @@ int run(
   // potential vorticity
   Array q({nx + 1, ny + 1}, dist);
   dr::mhp::fill(q, 0.0);
-  // kinetic energy
-  Array ke({nx + 1, ny}, dist);
-  dr::mhp::fill(ke, 0.0);
+
   // q advection
   Array qa({nx + 1, ny}, dist);
   dr::mhp::fill(qa, 0.0);
@@ -896,7 +890,7 @@ int run(
     // step
     iter_callback();
     // RK stage 1: u1 = u + dt*rhs(u)
-    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u, v, e, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
     dr::mhp::halo(u1).exchange_begin();
     dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -905,7 +899,7 @@ int run(
     dr::mhp::halo(e1).exchange_begin();
 
     // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
-    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u1, v1, e1, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                         rk_update2);
     dr::mhp::halo(u2).exchange_begin();
@@ -917,7 +911,7 @@ int run(
     dr::mhp::halo(e2).exchange_begin();
 
     // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
-    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, ke, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
+    rhs_vinv(u2, v2, e2, hu, hv, dudy, dvdx, dudx, dvdy, H_at_f, q, qa, qb, qg, qd, qhv, qhu, dudt, dvdt, dedt, h, g, f, dx_inv, dy_inv, dt);
     dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                         rk_update3);
     dr::mhp::halo(u).exchange_begin();
