@@ -471,10 +471,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
   /**
    * Evaluate right hand side of the equations, vector invariant form
    */
-
-  dr::mhp::halo(e).exchange_finalize();
-  compute_total_depth(e, h, H_at_f);
-
   auto rhs_dudy = [dy_inv](auto args) {
     auto [u, out] = args;
     out(0, 0) = (u(0, 0) - u(0, -1)) * dy_inv;
@@ -486,6 +482,9 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
     auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dudy, u_view, dudy_view);
   }
+
+  dr::mhp::halo(e).exchange_finalize();
+  compute_total_depth(e, h, H_at_f);
 
   dr::mhp::halo(v).exchange_finalize();
   auto rhs_dvdx = [dx_inv](auto args) {
@@ -499,7 +498,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
     auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
     dr::mhp::stencil_for_each(rhs_dvdx, v_view, dvdx_view);
   }
-  dr::mhp::halo(dvdx).exchange_begin();
 
   // vorticity
   {
@@ -507,14 +505,7 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
       auto [dudy, dvdx, H_at_f, out] = tuple;
       out(0, 0) = (f - dudy(0, 0) + dvdx(0, 0)) / H_at_f(0, 0);
     };
-    std::array<std::size_t, 2> start{0, 0};
-    std::array<std::size_t, 2> end{shape(q, 0), shape(q, 1)};
-    // TODO full arrays -> no views needed?
-    auto dudy_view = dr::mhp::views::submdspan(dudy.view(), start, end);
-    auto dvdx_view = dr::mhp::views::submdspan(dvdx.view(), start, end);
-    auto Hf_view = dr::mhp::views::submdspan(H_at_f.view(), start, end);
-    auto q_view = dr::mhp::views::submdspan(q.view(), start, end);
-    dr::mhp::stencil_for_each(kernel, dudy_view, dvdx_view, Hf_view, q_view);
+    dr::mhp::stencil_for_each(kernel, dudy, dvdx, H_at_f, q);
   }
   dr::mhp::halo(q).exchange_begin();
   dr::mhp::halo(q).exchange_finalize();
@@ -562,8 +553,24 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
     dr::mhp::stencil_for_each(rhs_hv, v_view, e_view, h_view, hv_view);
   }
   dr::mhp::halo(hv).exchange_begin();
-  dr::mhp::halo(hv).exchange_finalize();
 
+  dr::mhp::halo(u).exchange_finalize();
+  auto rhs_hu = [](auto args) {
+    auto [u, e, h, out] = args;
+    out(0, 0) = 0.5 * (e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
+  };
+  {
+    std::array<std::size_t, 2> start{1, 0};
+    std::array<std::size_t, 2> end{shape(u, 0) - 1, shape(u, 1)};
+    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
+    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
+  }
+  dr::mhp::halo(hu).exchange_begin();
+
+  dr::mhp::halo(hv).exchange_finalize();
   // qhv
   {
     auto kernel = [](auto tuple) {
@@ -583,23 +590,7 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
                               qd_view, qhv_view);
   }
 
-  dr::mhp::halo(u).exchange_finalize();
-  auto rhs_hu = [](auto args) {
-    auto [u, e, h, out] = args;
-    out(0, 0) = 0.5 * (e(0, 0) + h(0, 0) + e(1, 0) + h(1, 0)) * u(0, 0);
-  };
-  {
-    std::array<std::size_t, 2> start{1, 0};
-    std::array<std::size_t, 2> end{shape(u, 0) - 1, shape(u, 1)};
-    auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
-    auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
-    auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
-    auto hu_view = dr::mhp::views::submdspan(hu.view(), start, end);
-    dr::mhp::stencil_for_each(rhs_hu, u_view, e_view, h_view, hu_view);
-  }
-  dr::mhp::halo(hu).exchange_begin();
   dr::mhp::halo(hu).exchange_finalize();
-
   // qhu
   {
     auto kernel = [](auto tuple) {
@@ -643,7 +634,6 @@ void rhs_vinv(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
                               dudt_view);
   }
 
-  dr::mhp::halo(dvdx).exchange_finalize();
   auto rhs_dvdt = [dt, g, dy_inv](auto tuple) {
     auto [e, u, v, qhu, out] = tuple;
     auto dedy = (e(0, 0) - e(0, -1)) * dy_inv;
