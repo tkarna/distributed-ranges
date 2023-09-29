@@ -579,9 +579,29 @@ int run(
   Array qd({nx + 1, ny}, dist);
   dr::mhp::fill(qd, 0.0);
 
+  // potential energy
+  Array pe({nx + 1, ny}, dist);
+  dr::mhp::fill(pe, 0.0);
+  // kinetic energy
+  Array ke({nx + 1, ny}, dist);
+  dr::mhp::fill(ke, 0.0);
+
   // set bathymetry
   set_field(h, bathymetry, grid, grid.dx / 2, grid.dy / 2, 1);
   dr::mhp::halo(h).exchange();
+
+  // potential energy offset
+  double pe_offset;
+  {
+    // FIXME easier way of doing this?
+    Array h2({nx + 1, ny}, dist);
+    auto square = [](auto val) {
+      return val*val;
+    };
+    dr::mhp::transform(h, h2.begin(), square);
+    auto h2mean = dr::mhp::reduce(h2, static_cast<T>(0), std::plus{}) / nx / ny;
+    pe_offset = 0.5 * g * h2mean;
+  }
 
   // state for RK stages
   Array e1({nx + 1, ny}, dist);
@@ -644,7 +664,8 @@ int run(
   std::size_t i_export = 0;
   double next_t_export = 0.0;
   double t = 0.0;
-  double initial_v = 0.0;
+  double initial_vol = 0.0;
+  double initial_ene = 0.0;
   auto tic = std::chrono::steady_clock::now();
   for (std::size_t i = 0; i < nt + 1; i++) {
     t = i * dt;
@@ -653,21 +674,60 @@ int run(
 
       double elev_max = dr::mhp::reduce(e, static_cast<T>(0), max);
       double u_max = dr::mhp::reduce(u, static_cast<T>(0), max);
+      double q_max = dr::mhp::reduce(q, static_cast<T>(0), max);
+
+      // compute total potential energy
+      auto pe_kernel = [](auto args) {
+        auto [e, h] = args;
+        return 0.5 *g * (e + h) * (e - h);
+      };
+      dr::mhp::transform(dr::mhp::views::zip(e, h), pe.begin(), pe_kernel);
+      double total_pe = ((dr::mhp::reduce(pe, static_cast<T>(0), std::plus{})) + nx*ny*pe_offset) * dx * dy;
+
+      // compute total kinetic energy
+      {
+        auto kernel = [](auto tuple) {
+          auto [e, u, v, h, out] = tuple;
+          auto u2_at_t = 0.5 *(u(-1, 0)*u(-1, 0) + u(0, 0)*u(0, 0));
+          auto v2_at_t = 0.5 *(v(0, 0)*v(0, 0) + v(0, 1)*v(0, 1));
+          auto ke = 0.5 * (u2_at_t + v2_at_t);
+          auto H = e(0, 0) + h(0, 0);
+          out(0, 0) = H * ke;
+        };
+        std::array<std::size_t, 2> start{1, 0};
+        std::array<std::size_t, 2> end{shape(ke, 0), shape(ke, 1)};
+        auto e_view = dr::mhp::views::submdspan(e.view(), start, end);
+        auto u_view = dr::mhp::views::submdspan(u.view(), start, end);
+        auto v_view = dr::mhp::views::submdspan(v.view(), start, end);
+        auto h_view = dr::mhp::views::submdspan(h.view(), start, end);
+        auto ke_view = dr::mhp::views::submdspan(ke.view(), start, end);
+        dr::mhp::stencil_for_each(kernel, e_view, u_view, v_view, h_view, ke_view);
+      }
+      double total_ke = ((dr::mhp::reduce(ke, static_cast<T>(0), std::plus{}))) * dx * dy;
+
+      // total energy
+      double total_ene = total_pe + total_ke;
 
       // compute total depth and volume
       dr::mhp::transform(dr::mhp::views::zip(e, h), H.begin(), add);
-      double total_v =
+      double total_vol =
           (dr::mhp::reduce(H, static_cast<T>(0), std::plus{})) * dx * dy;
       if (i == 0) {
-        initial_v = total_v;
+        initial_vol = total_vol;
+        initial_ene = total_ene;
       }
-      double diff_v = total_v - initial_v;
+      double diff_vol = total_vol - initial_vol;
+      double diff_ene = total_ene - initial_ene;
 
       if (comm_rank == 0) {
         printf("%2lu %4lu %.3f ", i_export, i, t);
         printf("elev=%7.8f ", elev_max);
         printf("u=%7.8f ", u_max);
-        printf("dV=% 6.3e ", diff_v);
+        printf("q=%8.5f ", q_max);
+        printf("dV=% 6.3e ", diff_vol);
+        printf("PE=%7.2e ", total_pe);
+        printf("KE=%7.2e ", total_ke);
+        printf("dE=%6.3e", diff_ene);
         printf("\n");
       }
       if (elev_max > 1e3) {
