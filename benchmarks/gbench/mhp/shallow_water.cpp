@@ -189,6 +189,7 @@ void set_field(Array &arr,
 
 // Compute total depth at F points (vertices)
 void compute_total_depth(Array &e, Array &h, Array &H_at_f) {
+  dr::mhp::halo(e).exchange_finalize();
   // H_at_f: average over 4 adjacent T points, if present
   { // interior part
     auto kernel = [](auto tuple) {
@@ -310,13 +311,11 @@ void compute_total_depth(Array &e, Array &h, Array &H_at_f) {
   }
 }
 
-void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
+// Compute auxiliary fields needed for rhs
+void compute_aux_fields(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
          Array &dvdx, Array &H_at_f, Array &q, Array &qa, Array &qb, Array &qg,
-         Array &qd, Array &dudt, Array &dvdt, Array &dedt, Array &h, double g,
-         double f, double dx_inv, double dy_inv, double dt) {
-  /**
-   * Evaluate right hand side of the equations, vector invariant form
-   */
+         Array &qd, Array &h,
+         double f, double dx_inv, double dy_inv) {
   { // dudy
     auto kernel = [dy_inv](auto args) {
       auto [u, out] = args;
@@ -329,7 +328,6 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
     dr::mhp::stencil_for_each(kernel, u_view, dudy_view);
   }
 
-  dr::mhp::halo(e).exchange_finalize();
   compute_total_depth(e, h, H_at_f);
 
   dr::mhp::halo(v).exchange_finalize();
@@ -378,10 +376,6 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
   dr::mhp::halo(qb).exchange_begin();
   dr::mhp::halo(qg).exchange_begin();
   dr::mhp::halo(qd).exchange_begin();
-  dr::mhp::halo(qa).exchange_finalize();
-  dr::mhp::halo(qb).exchange_finalize();
-  dr::mhp::halo(qg).exchange_finalize();
-  dr::mhp::halo(qd).exchange_finalize();
 
   { // hv
     auto kernel = [](auto args) {
@@ -413,9 +407,23 @@ void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
     dr::mhp::stencil_for_each(kernel, u_view, e_view, h_view, hu_view);
   }
   dr::mhp::halo(hu).exchange_begin();
+
+  dr::mhp::halo(qa).exchange_finalize();
+  dr::mhp::halo(qb).exchange_finalize();
+  dr::mhp::halo(qg).exchange_finalize();
+  dr::mhp::halo(qd).exchange_finalize();
   dr::mhp::halo(hv).exchange_finalize();
   dr::mhp::halo(hu).exchange_finalize();
+}
 
+void rhs(Array &u, Array &v, Array &e, Array &hu, Array &hv, Array &dudy,
+         Array &dvdx, Array &H_at_f, Array &q, Array &qa, Array &qb, Array &qg,
+         Array &qd, Array &dudt, Array &dvdt, Array &dedt, Array &h, double g,
+         double f, double dx_inv, double dy_inv, double dt) {
+  /**
+   * Evaluate right hand side of the equations, vector invariant form
+   */
+  compute_aux_fields(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, h, f,  dx_inv,  dy_inv);
   { // dudt
     auto kernel = [dt, g, dx_inv](auto tuple) {
       auto [e, u, v, hv, qa, qb, qg, qd, out] = tuple;
