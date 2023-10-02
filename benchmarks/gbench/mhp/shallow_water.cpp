@@ -88,23 +88,28 @@ struct ArakawaCGrid {
   };
 };
 
-// FIXME
 // Get number of read/write bytes and flops for a single time step
 // These numbers correspond to the fused kernel version
 void calculate_complexity(std::size_t nx, std::size_t ny, std::size_t &nread,
                           std::size_t &nwrite, std::size_t &nflop) {
-  // stage1: 2+2+3 = 7
-  // stage2: 3+3+4 = 10
-  // stage3: 3+3+4 = 10
-  nread = (27 * nx * ny) * sizeof(T);
+  // H, dudy, dvdx, q: 2+1+1+3
+  // q adv, hv, hu: 1+3+3
+  // stage1: 8+8+3 = 19
+  // stage2: 9+9+4 = 22
+  // stage3: 9+9+4 = 22
+  nread = (77 * nx * ny) * sizeof(T);
+  // H, dudy, dvdx, q: 1+1+1+1
+  // q adv, hv, hu: 4+1+1
   // stage1: 3
   // stage2: 3
   // stage3: 3
-  nwrite = (9 * nx * ny) * sizeof(T);
-  // stage1: 3+3+6 = 12
-  // stage2: 6+6+9 = 21
-  // stage3: 6+6+9 = 21
-  nflop = 54 * nx * ny;
+  nwrite = (19 * nx * ny) * sizeof(T);
+  // H, dudy, dvdx, q: 9+2+2+3
+  // q adv, hv, hu: 12+5+5
+  // stage1: 36+36+7 = 79
+  // stage2: 39+39+10 = 88
+  // stage3: 39+39+10 = 88
+  nflop = 293 * nx * ny;
 }
 
 double exact_elev(double x, double y, double t, double lx, double ly) {
