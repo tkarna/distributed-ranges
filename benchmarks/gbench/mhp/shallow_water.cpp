@@ -23,7 +23,6 @@ int comm_size;
 namespace ShallowWater {
 
 using T = double;
-
 using Array = dr::mhp::distributed_mdarray<T, 2>;
 
 // gravitational acceleration
@@ -823,12 +822,6 @@ int run(
   std::size_t ny = n;
   const double xmin = -1, xmax = 1;
   const double ymin = -1, ymax = 1;
-  const double lx = xmax - xmin;
-  const double ly = ymax - ymin;
-  const double dx = lx / nx;
-  const double dy = ly / ny;
-  const double dx_inv = 1.0 / dx;
-  const double dy_inv = 1.0 / dy;
   ArakawaCGrid grid(xmin, xmax, ymin, ymax, nx, ny);
 
   std::size_t halo_radius = 1;
@@ -940,7 +933,7 @@ int run(
   double h_max = dr::mhp::reduce(h, static_cast<T>(0), max);
   double c = std::sqrt(g * h_max);
   double alpha = 0.5;
-  double dt = alpha * dx / c;
+  double dt = alpha * std::min(grid.dx, grid.dy) / c;
   dt = t_export / static_cast<int>(ceil(t_export / dt));
   std::size_t nt = static_cast<int>(ceil(t_end / dt));
   if (benchmark_mode) {
@@ -1001,8 +994,8 @@ int run(
       };
       dr::mhp::transform(dr::mhp::views::zip(e, h), pe.begin(), pe_kernel);
       double total_pe = ((dr::mhp::reduce(pe, static_cast<T>(0), std::plus{})) +
-                         nx * ny * pe_offset) *
-                        dx * dy;
+                         grid.nx * grid.ny * pe_offset) *
+                        grid.dx * grid.dy;
 
       // compute total kinetic energy
       {
@@ -1025,15 +1018,16 @@ int run(
                                   ke_view);
       }
       double total_ke =
-          ((dr::mhp::reduce(ke, static_cast<T>(0), std::plus{}))) * dx * dy;
+          ((dr::mhp::reduce(ke, static_cast<T>(0), std::plus{}))) * grid.dx *
+          grid.dy;
 
       // total energy
       double total_ene = total_pe + total_ke;
 
       // compute total depth and volume
       dr::mhp::transform(dr::mhp::views::zip(e, h), H.begin(), add);
-      double total_vol =
-          (dr::mhp::reduce(H, static_cast<T>(0), std::plus{})) * dx * dy;
+      double total_vol = (dr::mhp::reduce(H, static_cast<T>(0), std::plus{})) *
+                         grid.dx * grid.dy;
       if (i == 0) {
         initial_vol = total_vol;
         initial_ene = total_ene;
@@ -1066,15 +1060,15 @@ int run(
     iter_callback();
     if (fused_kernels) {
       stage1(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, u1, v1, e1,
-             h, g, f, dx_inv, dy_inv, dt);
+             h, g, f, grid.dx_inv, grid.dy_inv, dt);
       stage2(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, u1, v1, e1,
-             u2, v2, e2, h, g, f, dx_inv, dy_inv, dt);
+             u2, v2, e2, h, g, f, grid.dx_inv, grid.dy_inv, dt);
       stage3(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, u2, v2, e2,
-             h, g, f, dx_inv, dy_inv, dt);
+             h, g, f, grid.dx_inv, grid.dy_inv, dt);
     } else {
       // RK stage 1: u1 = u + dt*rhs(u)
       rhs(u, v, e, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, dudt, dvdt,
-          dedt, h, g, f, dx_inv, dy_inv, dt);
+          dedt, h, g, f, grid.dx_inv, grid.dy_inv, dt);
       dr::mhp::transform(dr::mhp::views::zip(u, dudt), u1.begin(), add);
       dr::mhp::halo(u1).exchange_begin();
       dr::mhp::transform(dr::mhp::views::zip(v, dvdt), v1.begin(), add);
@@ -1084,7 +1078,7 @@ int run(
 
       // RK stage 2: u2 = 0.75*u + 0.25*(u1 + dt*rhs(u1))
       rhs(u1, v1, e1, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, dudt, dvdt,
-          dedt, h, g, f, dx_inv, dy_inv, dt);
+          dedt, h, g, f, grid.dx_inv, grid.dy_inv, dt);
       dr::mhp::transform(dr::mhp::views::zip(u, u1, dudt), u2.begin(),
                          rk_update2);
       dr::mhp::halo(u2).exchange_begin();
@@ -1097,7 +1091,7 @@ int run(
 
       // RK stage 3: u3 = 1/3*u + 2/3*(u2 + dt*rhs(u2))
       rhs(u2, v2, e2, hu, hv, dudy, dvdx, H_at_f, q, qa, qb, qg, qd, dudt, dvdt,
-          dedt, h, g, f, dx_inv, dy_inv, dt);
+          dedt, h, g, f, grid.dx_inv, grid.dy_inv, dt);
       dr::mhp::transform(dr::mhp::views::zip(u, u2, dudt), u.begin(),
                          rk_update3);
       dr::mhp::halo(u).exchange_begin();
@@ -1150,9 +1144,9 @@ int run(
         if (global_i > 0) {
           for (std::size_t j = 0; j < e.extent(1); j++) {
             std::size_t global_j = j + origin[1];
-            T x = xmin + dx / 2 + (global_i - 1) * dx;
-            T y = ymin + dy / 2 + global_j * dy;
-            e(i, j) = exact_elev(x, y, t, lx, ly);
+            T x = xmin + grid.dx / 2 + (global_i - 1) * grid.dx;
+            T y = ymin + grid.dy / 2 + global_j * grid.dy;
+            e(i, j) = exact_elev(x, y, t, grid.lx, grid.ly);
           }
         }
       }
@@ -1165,8 +1159,8 @@ int run(
   };
   dr::mhp::transform(dr::mhp::views::zip(e, e_exact), error.begin(),
                      error_kernel);
-  double err_L2 = dr::mhp::reduce(error, static_cast<T>(0), std::plus{}) * dx *
-                  dy / lx / ly;
+  double err_L2 = dr::mhp::reduce(error, static_cast<T>(0), std::plus{}) *
+                  grid.dx * grid.dy / grid.lx / grid.ly;
   err_L2 = std::sqrt(err_L2);
   if (comm_rank == 0) {
     std::cout << "L2 error: " << std::setw(7) << std::scientific;
