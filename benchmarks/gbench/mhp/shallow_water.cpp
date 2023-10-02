@@ -111,9 +111,7 @@ double bathymetry(double x, double y, double lx, double ly) {
    * Bathymetry, i.e. water depth at rest.
    *
    */
-  // return 1.0;
-  return 10 * exact_elev(x, y, 0.0, lx, ly) +
-         1.0; // FIXME nontrivial for testing
+  return 1.0;
 }
 
 double initial_elev(double x, double y, double lx, double ly) {
@@ -1148,7 +1146,7 @@ int run(
                 << std::endl;
     }
   } else if (nx == 128 && ny == 128) {
-    double expected_L2 = 4.106813340444025e-05;
+    double expected_L2 = 4.315799035627906e-05;
     double rel_tolerance = 1e-6;
     double rel_err = err_L2 / expected_L2 - 1.0;
     if (!(fabs(rel_err) < rel_tolerance)) {
