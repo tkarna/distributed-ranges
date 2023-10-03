@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "cgrid.hpp"
+#include "wave_utils.hpp"
 #include "cxxopts.hpp"
 #include "dr/mhp.hpp"
 #include "mpi.h"
